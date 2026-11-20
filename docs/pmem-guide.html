@@ -1,0 +1,922 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pmem 使用手册：项目研发记忆</title>
+<style>
+  :root {
+    --bg: #f7f8fa;
+    --card: #ffffff;
+    --text: #1f2328;
+    --muted: #59636e;
+    --border: #d8dee4;
+    --accent: #2f6feb;
+    --accent-soft: #e8f0fe;
+    --ok: #1a7f37;
+    --ok-soft: #e6f4ea;
+    --warn: #9a6700;
+    --warn-soft: #fff8e1;
+    --danger: #cf222e;
+    --code-bg: #f1f3f5;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 15px;
+    line-height: 1.75;
+    color: var(--text);
+    background: var(--bg);
+  }
+  .layout { display: flex; max-width: 1280px; margin: 0 auto; }
+  nav {
+    position: sticky; top: 0; align-self: flex-start;
+    width: 240px; height: 100vh; overflow-y: auto;
+    padding: 28px 16px 28px 24px;
+    border-right: 1px solid var(--border);
+  }
+  nav .brand { font-weight: 700; font-size: 18px; margin-bottom: 4px; }
+  nav .ver { color: var(--muted); font-size: 12px; margin-bottom: 20px; }
+  nav a {
+    display: block; padding: 4px 10px; margin: 2px 0;
+    color: var(--muted); text-decoration: none; border-radius: 6px; font-size: 14px;
+  }
+  nav a:hover { background: var(--accent-soft); color: var(--accent); }
+  main { flex: 1; min-width: 0; padding: 32px 48px 80px; }
+  h1 { font-size: 30px; margin: 0 0 8px; }
+  .subtitle { color: var(--muted); margin: 0 0 28px; font-size: 16px; }
+  section {
+    background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+    padding: 24px 32px; margin-bottom: 24px;
+  }
+  h2 { font-size: 22px; margin: 0 0 16px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+  h3 { font-size: 17px; margin: 24px 0 8px; }
+  p { margin: 8px 0; }
+  code {
+    font-family: Consolas, "JetBrains Mono", "Courier New", monospace;
+    font-size: 13px; background: var(--code-bg); padding: 1px 6px; border-radius: 4px;
+  }
+  pre {
+    background: #0d1117; color: #e6edf3; padding: 14px 18px; border-radius: 8px;
+    overflow-x: auto; font-size: 13px; line-height: 1.6; margin: 10px 0;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+  pre .c { color: #8b949e; }
+  table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 14px; }
+  th, td { border: 1px solid var(--border); padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: #f6f8fa; font-weight: 600; white-space: nowrap; }
+  .callout { border-left: 4px solid var(--accent); background: var(--accent-soft); padding: 10px 16px; border-radius: 0 8px 8px 0; margin: 12px 0; }
+  .callout.ok { border-color: var(--ok); background: var(--ok-soft); }
+  .callout.warn { border-color: var(--warn); background: var(--warn-soft); }
+  .steps { counter-reset: step; list-style: none; padding: 0; margin: 0; }
+  .steps > li { position: relative; padding: 4px 0 16px 48px; }
+  .steps > li::before {
+    counter-increment: step; content: counter(step);
+    position: absolute; left: 0; top: 2px; width: 32px; height: 32px; border-radius: 50%;
+    background: var(--accent); color: #fff; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .steps > li > strong { font-size: 16px; }
+  .tag { display: inline-block; font-size: 12px; padding: 0 8px; border-radius: 10px; margin-left: 6px; vertical-align: middle; }
+  .tag.once { background: var(--accent-soft); color: var(--accent); }
+  .tag.each { background: var(--ok-soft); color: var(--ok); }
+  .tag.manual { background: var(--warn-soft); color: var(--warn); }
+  .flow { display: flex; flex-wrap: wrap; align-items: stretch; gap: 8px; margin: 14px 0; }
+  .flow .node {
+    flex: 1; min-width: 150px; border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px 14px; background: #fbfcfd; font-size: 14px;
+  }
+  .flow .node b { display: block; margin-bottom: 4px; color: var(--accent); }
+  .flow .arrow { align-self: center; color: var(--muted); font-size: 20px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .card { border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px; background: #fbfcfd; }
+  .card h4 { margin: 0 0 6px; font-size: 15px; }
+  .kind { font-weight: 600; }
+  ul { padding-left: 22px; margin: 6px 0; }
+  li { margin: 3px 0; }
+  .muted { color: var(--muted); font-size: 13px; }
+  @media (max-width: 900px) {
+    nav { display: none; }
+    main { padding: 20px; }
+    .grid2 { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav>
+  <div class="brand">pmem 使用手册</div>
+  <div class="ver">v0.7.0 · 项目研发记忆</div>
+  <a href="#glance">一眼看懂</a>
+  <a href="#what">pmem 是什么</a>
+  <a href="#benefits">收益与适用场景</a>
+  <a href="#concepts">核心概念</a>
+  <a href="#onboard">在其他项目接入</a>
+  <a href="#daily">日常使用</a>
+  <a href="#gate">闸门（Hooks）</a>
+  <a href="#mcp">MCP 工具</a>
+  <a href="#cli">命令行</a>
+  <a href="#config">配置</a>
+  <a href="#storage">存储与资源开销</a>
+  <a href="#ranking">检索与排序</a>
+  <a href="#curation">整理与维护</a>
+  <a href="#metrics">衡量收益</a>
+  <a href="#import">迁移旧记忆</a>
+  <a href="#faq">常见问题</a>
+  <a href="#limits">已知限制</a>
+</nav>
+
+<main>
+<h1>pmem：插拔式、托管式的 AI 项目记忆系统</h1>
+<p class="subtitle"><strong>插拔式：</strong>一条 <code>pmem init</code> 接入任何项目，不改业务代码；不想用了，删掉它生成的配置即可。<br>
+<strong>托管式：</strong>接入后绝大部分时候不需要你手动操作。查记忆、写记忆、忘查时拦截、改完没记时提醒、新增的代码目录登记成模块，全部由 AI 和 Hook 自动完成，你照常提需求、修 bug 就行。<br>记忆是仓库里的 Markdown 文件，跟代码一起提交、团队共享，不需要服务器，也不上传任何数据。支持 Cursor、Claude Code、Codex。</p>
+
+<section id="glance" style="border:2px solid var(--accent)">
+  <h2>一眼看懂</h2>
+  <div class="flow">
+    <div class="node"><b>① 绑定一次</b><code>pmem init</code> 生成规则、Hook、MCP 配置，挂到 AI 工具上</div>
+    <div class="arrow">→</div>
+    <div class="node"><b>② 改前自动查</b>AI 要改某个文件，Hook 定位所属模块；没查过记忆就拦下，直到查过</div>
+    <div class="arrow">→</div>
+    <div class="node"><b>③ 按模块记</b>改了模块就写功能记录（需求来源、必须保持的行为）；有排除的方向、根因和坑、约束、方案取舍再写教训，都是 <code>.md</code>，附一句话标题</div>
+    <div class="arrow">→</div>
+    <div class="node"><b>④ 结束自动追问</b>改了模块却没写记忆，Hook 追问一次有没有新教训</div>
+    <div class="arrow">→</div>
+    <div class="node"><b>⑤ 随代码共享</b>记忆跟代码一起提交，队友拉代码就能查到</div>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <h4>核心特点</h4>
+      <ul>
+        <li><strong>挂载式</strong>：不改代码，也不改工作方式</li>
+        <li><strong>自动触发</strong>：Hook 改前拦截、结束提醒；出错直接放行并提醒一次，不卡开发</li>
+        <li><strong>按模块寻址</strong>：改哪个文件就查哪个业务模块</li>
+        <li><strong>本地 + 团队共享</strong>：记忆在仓库里，Git / SVN 均可</li>
+        <li><strong>不用过期结论</strong>：关联代码变了标“需核实”，新结论替代旧结论</li>
+        <li><strong>省 token</strong>：每次只返回最相关的几条，与总量无关</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>三步接入（约 5 分钟）</h4>
+      <pre><code><span class="c"># 1. 安装（每人一次）</span>
+uv tool install "pmem[embed] @ git+https://github.com/mry-ship/pmem"
+<span class="c"># 2. 项目根目录绑定（每个项目一次）</span>
+pmem init --type game
+<span class="c"># 3. Cursor 设置 → MCP 启用 pmem，
+#    对 AI 说“按 pmem-bootstrap 技能划分模块”</span>
+pmem doctor</code></pre>
+      <p class="muted">队友拉代码后只需安装并打开 MCP 开关。详见 <a href="#onboard">在其他项目接入</a>。</p>
+    </div>
+  </div>
+
+  <h3>后续维护</h3>
+  <table>
+    <tr><th>什么时候</th><th>做什么</th></tr>
+    <tr><td>日常开发</td><td>什么都不用做；记忆由 AI 自动写；不想被打扰时写“跳过记忆”</td></tr>
+    <tr><td>提交代码时</td><td>把 <code>.memory/</code> 新增的记忆一起提交，<code>pmem doctor</code> 会提示还有几条没提交</td></tr>
+    <tr><td>记忆库该体检时</td><td>不必自己跑。接入后约每 24 小时后台自检一次，有问题 AI 会提一行；仍可随时 <code>pmem doctor</code></td></tr>
+    <tr><td>新增业务模块</td><td>默认自动：改到新目录或会话开始时后台扫描并登记（<code>sync.auto</code>）；也可手动 <code>pmem sync</code> 预览、<code>--apply</code> 写入（只追加），或直接在 <code>.memory/modules.yaml</code> 里加</td></tr>
+    <tr><td>同一议题记忆变多</td><td>对 AI 说“按 pmem-compact 技能合并记忆”</td></tr>
+    <tr><td>换个说法搜不到</td><td>对 AI 说“按 pmem-normalize 技能整理同义词”</td></tr>
+    <tr><td>刚接入、记忆库还空</td><td>对 AI 说“按 pmem-seed 技能提炼种子记忆”，负责人用 <code>pmem seed</code> 过目后转正</td></tr>
+    <tr><td>模块改名、合并</td><td><code>pmem migrate rename</code> / <code>merge</code>，记忆随之搬家（默认预览，<code>--apply</code> 执行）</td></tr>
+    <tr><td>一个模块管得太宽，要拆开</td><td><code>pmem migrate split &lt;模块&gt; --to &lt;新模块&gt;=&lt;路径&gt;</code>，记忆按关联代码分过去</td></tr>
+    <tr><td>个别记忆写错了模块</td><td><code>pmem migrate move &lt;id&gt; ... --to &lt;模块&gt;</code>（默认预览，<code>--apply</code> 执行）</td></tr>
+    <tr><td>代码文件改名、搬家后记忆都标“需核实”</td><td><code>pmem anchors --rename &lt;旧路径&gt;=&lt;新路径&gt;</code> 改写关联代码，再核对后 <code>pmem confirm</code></td></tr>
+    <tr><td>某条记忆已过时、又没有替代结论</td><td><code>pmem archive &lt;id&gt;</code>，<code>--restore</code> 撤销</td></tr>
+    <tr><td>合并错了，要撤销</td><td><code>pmem compact --undo &lt;合并后的 id&gt;</code>：原记忆重新现行；<code>pmem archive --restore &lt;id&gt;</code> 重做合并</td></tr>
+    <tr><td>看记忆怎么演变、有没有漏记</td><td><code>pmem map</code>，打开生成的 <code>.memory/wiki/map.html</code></td></tr>
+    <tr><td>业务下线、模块不再维护</td><td><code>pmem migrate deprecate &lt;模块&gt; --apply</code>，<code>--undo</code> 撤销</td></tr>
+    <tr><td>定期收口（模块负责人）</td><td>对 AI 说“按 pmem-consolidate 技能整理记忆库”（按 <code>pmem health</code> 逐节处理）</td></tr>
+    <tr><td>想看效果</td><td><code>pmem report</code></td></tr>
+    <tr><td>想通读全部结论</td><td>打开 <code>.memory/wiki/index.md</code>（写入记忆后自动更新，过期的标“需核实”）</td></tr>
+    <tr><td>看模块现在的完整设计</td><td>打开 <code>.memory/specs/&lt;模块&gt;/</code>，四份分开：策划、美术、程序、现状，记的是当前完整内容。还没有就对 AI 说“补全模块规格”（入口 <code>pmem spec complete</code>，正文写到九成八）。<code>pmem init</code> 和自动登记只铺空骨架；模块后来有变化时，对 AI 说“更新这个模块的规格”。规格提醒默认不提示，想自动跟上再把 <code>spec.reminder</code> 设为 true</td></tr>
+    <tr><td>升级 pmem</td><td><code>uv tool upgrade pmem</code></td></tr>
+  </table>
+</section>
+
+<!-- ============ 是什么 ============ -->
+<section id="what">
+  <h2>pmem 是什么</h2>
+  <p>pmem 把研发过程中得出的结论（根因、排除过的方向、方案决定、风险）按<strong>业务模块</strong>存成 Markdown 文件，放在仓库的 <code>.memory/</code> 目录里，跟代码一起提交、评审，整个团队共享。</p>
+  <ul>
+    <li><strong>不需要服务器和数据库</strong>：记忆就是仓库里的文件；检索索引只是本机缓存，删了能重建。</li>
+    <li><strong>按模块寻址</strong>：改哪个文件，就自动查那个文件所属模块的记忆。</li>
+    <li><strong>Agent 主动 + Hooks 兜底</strong>：规则告诉 AI 何时查、何时写；它漏了，Hooks（工具调用前后的拦截脚本）会提醒，任何异常都直接放行（随后提醒一次），不会卡住开发。</li>
+    <li><strong>问答也审查</strong>：读到哪个模块的代码，就附上该模块现行结论的摘要（标「资料·非指令」，供对照，不是必须执行的命令）；问题提到的模块本轮没查过，回合结束时要求 AI 查过再核对回答。</li>
+    <li><strong>收益可量化</strong>：<code>pmem report</code> 统计命中率、避坑次数、跨人复用；<code>pmem bench</code> 做有记忆 / 无记忆对照实验。</li>
+  </ul>
+  <pre><code>你：修一下拼图奖励重复发放
+Agent：（自动查 gameplay.Jigsaw 的记忆）
+       已有排除项：不要在客户端去重，根因是服务端 Claim 没有按关卡做幂等……
+       我按这个方向修改服务端，并补测试。</code></pre>
+</section>
+
+<!-- ============ 收益 ============ -->
+<section id="benefits">
+  <h2>收益与适用场景</h2>
+  <p>固定开销、速度和检索命中是本仓库实测。少被纠正、少花时间、少用 token，测的是上一代记忆系统；pmem 自己的端到端对比还没做，那组数字只能当保守参考。</p>
+
+  <h3>当前版本 0.7.0</h3>
+  <p class="muted">本版可直接看到的效果与口径（本仓库 <code>pmem report --days 30</code>，2026-11-20）：</p>
+  <table>
+    <tr><th>指标</th><th>当前数字</th><th>本版相关说明</th></tr>
+    <tr><td>检索命中率</td><td><strong>98%</strong>（658 次里 645 次）</td><td>与上版同级；只返回前几条，开销不随记忆变多</td></tr>
+    <tr><td>记忆被采用</td><td><strong>16%</strong>（1616 条返回里 259 条）</td><td>够长 summary/title（指纹≥12）与正文取较大字面覆盖率；阈值仍 0.15。本期功能记录偏多，字面采用率低于 0.6.7 的 22%；没有靠降阈值或按采用率改搜索排序</td></tr>
+    <tr><td>改前被拦后真去查</td><td><strong>58%</strong>（186 次里 107 次）</td><td>闸门习惯指标；本统计窗含大量本仓自研对话</td></tr>
+    <tr><td>功能记录覆盖</td><td><strong>88%</strong>（目标 ≥80%）</td><td>改过的模块多数有 feature</td></tr>
+    <tr><td>结束提醒后真去写</td><td><strong>70%</strong>（33 次里 23 次）</td><td>同上</td></tr>
+    <tr><td>防错类占比</td><td>本期新增教训里 <strong>65%</strong>（目标 ≥30%）</td><td>排除项 / 风险 / 更正</td></tr>
+    <tr><td>接入成熟度</td><td>Cursor / Claude Code / Codex</td><td>均已在<strong>真实会话</strong>验证可用</td></tr>
+    <tr><td>v0.7 能力</td><td>已发布</td><td><code>enforced_by</code>、health 规则候选、<code>facets</code>/<code>when</code>、边界校验、返回契约、pyright 基线</td></tr>
+  </table>
+  <p class="muted">对照实验仍见下方「v0.5 和 v0.3 比」；端到端「少被纠正 / 少耗时 / 少 token」还没在现行 pmem 上测完，请用 <code>pmem bench</code> 或继续看 <code>pmem report</code>。</p>
+
+  <h3>优点和限制</h3>
+  <table>
+    <tr><th>优点</th><th>限制</th></tr>
+    <tr><td>记忆是仓库里的文件，队友拉代码就有</td><td>队友没装 pmem 时闸门不起作用</td></tr>
+    <tr><td>忘了查就改：编辑工具和终端写命令都会拦，事后还会比对</td><td>脚本拼出来的路径、<code>git stash</code> / <code>reset</code> 事前认不出，只能事后提醒</td></tr>
+    <tr><td>只返回前几条（默认 5 条），853 条和几十条的单次开销差不多</td><td>刚接入时每个对话大约净增 3000～5000 token</td></tr>
+    <tr><td>写进去不会被悄悄删掉（上一代约 19%，这里是 0）</td><td>记忆没跟上代码时会给出过期结论，要核对后确认或更正</td></tr>
+    <tr><td>人工核对 18 个查询，正确结论进前 3：6 → 16</td><td>被纠正比例、耗时、token 总量的下降还没在 pmem 上测完</td></tr>
+    <tr><td><code>pmem init</code> 支持 Cursor、Claude Code、Codex；均已在真实会话验证可用</td><td>Cursor 纯问答要等回合结束才核对</td></tr>
+  </table>
+
+  <h3>速度</h3>
+  <table>
+    <tr><th>环节</th><th>耗时</th><th>说明</th></tr>
+    <tr><td>单次检索</td><td><strong>中位约 7 毫秒</strong></td><td>本仓库 106 次真实检索；上一代 300～400 毫秒</td></tr>
+    <tr><td>读代码时附摘要</td><td>Hook 约 0.3 秒</td><td>每个模块每个对话一次</td></tr>
+    <tr><td>没查就改被拦下</td><td>Hook 约 0.3 秒</td><td>额外约 115 token</td></tr>
+    <tr><td>其他工具调用</td><td>Hook 约 0.2 秒</td><td>不附加记忆正文</td></tr>
+    <tr><td>语义模型</td><td>约 90 MB，首次检索才加载</td><td>避免服务启动卡住约 30 秒</td></tr>
+  </table>
+
+  <h3>token 消耗</h3>
+  <p class="muted">本仓库实测，按 GPT-4o 分词。同一对话里再次命中的记忆只给标题。</p>
+  <table>
+    <tr><th>什么时候</th><th>额外 token</th><th>额外耗时</th></tr>
+    <tr><td>每个对话：加载规则</td><td>约 850</td><td>无</td></tr>
+    <tr><td>每个模块每个对话一次：检索（默认 5 条教训全文 + 3 条功能记录标题）</td><td>中位约 2400，最多约 3300</td><td>约 7 毫秒</td></tr>
+    <tr><td>查子模块时另带的上级教训（只在细分了模块时）</td><td>每条几百，默认最多 2 条</td><td>无</td></tr>
+    <tr><td>读代码时附摘要</td><td>约 530</td><td>Hook 约 0.3 秒</td></tr>
+    <tr><td>没查就改被拦下</td><td>约 115</td><td>Hook 约 0.3 秒</td></tr>
+    <tr><td>其他工具调用</td><td>0</td><td>Hook 约 0.2 秒</td></tr>
+    <tr><td>涉及 1～2 个模块的一次修 bug</td><td><strong>合计约 3000～5000</strong></td><td>检索本身可忽略</td></tr>
+  </table>
+  <p class="muted">想少付这笔开销：关掉 <code>gate.read_digest</code> 和 <code>gate.question_review</code>，或说“跳过记忆”。</p>
+
+  <h3>能省多少</h3>
+  <table>
+    <tr><th>指标</th><th>数字</th><th>本仓库近 30 天</th><th>TileMatch 近 14 天</th><th>口径</th></tr>
+    <tr><td>读写 token</td><td><strong>下降 18%</strong></td><td>—</td><td>—</td><td>上一代系统上线前后。pmem 端到端还没测</td></tr>
+    <tr><td>每次改代码的耗时</td><td><strong>下降 36%～44%</strong></td><td>—</td><td>—</td><td>同上。前后对比，不是对照实验。样本：改过代码的对话 122 个对 62 个</td></tr>
+    <tr><td>被用户纠正的比例</td><td><strong>下降 54%～69%</strong></td><td>—</td><td>—</td><td>同上。长对话全程不回退从 27% 到 52%</td></tr>
+    <tr><td>零碎记忆合并</td><td>13 条约 2500 字收成 2 条约 1150 字</td><td>—</td><td>—</td><td>本仓库实测</td></tr>
+    <tr><td>开销是否随记忆变多</td><td>853 条和几十条相近</td><td>—</td><td>—</td><td>只返回前几条，被替代的旧结论不返回</td></tr>
+    <tr><td>检索命中率</td><td>—</td><td><strong>98%</strong>（658 次里 645 次）</td><td><strong>99%</strong>（173 次里 172 次）</td><td><code>pmem report</code>，仅本机</td></tr>
+    <tr><td>记忆被采用</td><td>—</td><td><strong>16%</strong>（1616 条返回里 259 条；字面重合+够长标题，保守下限）</td><td>—</td><td>同上。阈值 0.15；换说法复述不计</td></tr>
+    <tr><td>改前被拦后真去查</td><td>—</td><td><strong>58%</strong>（186 次里 107 次）</td><td><strong>98%</strong>（47 次里 46 次）</td><td>同上</td></tr>
+    <tr><td>功能记录覆盖</td><td>—</td><td><strong>88%</strong>（目标 ≥80%）</td><td><strong>79%</strong>（14 次改码中 11 次有 feature）</td><td>同上</td></tr>
+    <tr><td>结束提醒后真去写</td><td>—</td><td><strong>70%</strong>（33 次里 23 次）</td><td><strong>47%</strong>（19 次里 9 次）</td><td>同上</td></tr>
+    <tr><td>跨人复用</td><td>—</td><td><strong>14</strong> 次</td><td><strong>108</strong> 次</td><td>同上。用到同事写的记忆</td></tr>
+  </table>
+  <p class="muted">「数字」列里带下降比例的仍是上一代口径；后两列是现行 pmem 本机使用。本仓库列为 <strong>0.7.0</strong> 口径下 2026-11-20 近 30 天报告；TileMatch 为真实业务项目（2026-10-27 报告，窗口 14 天，现行记忆 639 条）。也可用 <code>pmem bench</code> 做对照实验。</p>
+
+  <h3>检索有多准</h3>
+  <table>
+    <tr><th>指标</th><th>上一代</th><th>pmem</th></tr>
+    <tr><td>18 个人工核对的查询，正确结论排进前 3</td><td>6 / 18</td><td><strong>16 / 18</strong></td></tr>
+    <tr><td>本仓库真实检索，当时用到的结论排进前 3（91 题，2026-10-20）</td><td></td><td><strong>82 / 91（90%）</strong>，排第一 40 / 91</td></tr>
+    <tr><td>只传文件路径，锚点在该文件的教训排进前 3（120 题）</td><td></td><td><strong>118 / 120（98%）</strong></td></tr>
+    <tr><td>用没写进正文的别名检索，排进前 3（126 题）</td><td></td><td><strong>122 / 126（97%）</strong></td></tr>
+    <tr><td>写进去后被悄悄删掉的记忆</td><td>19%</td><td><strong>0</strong></td></tr>
+    <tr><td>搜“闪退”排进前 3 的“崩溃”记忆</td><td>0 条</td><td><strong>2 条</strong></td></tr>
+  </table>
+  <p class="muted">检索数字来自 <code>scripts/eval_real_queries.py</code>。真实检索的答案是当时回复确实用到的记忆，用来看现在还能不能把那条结论排回来。只用关键词时前 3 为 73/91。按文件曾到 100% 的那次是记忆库副本上的重放，现行库是 118/120。</p>
+  <h3>v0.5 和 v0.3 比</h3>
+  <p class="muted">2026-10-21 把 v0.3 抽到临时目录，用本仓库同一份记忆库、同一套题重放；token 按 GPT-4o 分词。</p>
+  <table>
+    <tr><th>指标</th><th>v0.3</th><th>v0.5</th></tr>
+    <tr><td>真实检索，当时用到的结论排进前 3（91 题）</td><td>73 题（80%）</td><td><strong>82 题（90%）</strong></td></tr>
+    <tr><td>真实检索，排第一 / 平均排名得分（MRR）</td><td>37 题 / 0.603</td><td><strong>40 题 / 0.657</strong></td></tr>
+    <tr><td>只传文件路径，排进前 3（115 题）</td><td>113 题（98%）</td><td>113 题（98%）</td></tr>
+    <tr><td>换个说法检索，排进前 3（112 题）</td><td>110 题（98%）</td><td>110 题（98%）</td></tr>
+    <tr><td>每个对话加载规则</td><td>1034 token</td><td><strong>853 token（−18%）</strong></td></tr>
+    <tr><td>单次检索返回，中位 / 最多</td><td>1923 / 2723 token</td><td>2375 / 3288 token</td></tr>
+    <tr><td>单次检索耗时，中位</td><td>1.8 毫秒</td><td>6.5 毫秒</td></tr>
+  </table>
+  <p class="muted">准确率的提升集中在真实问题上，按文件和换说法本来就接近满分；v0.3 读不了功能记录，候选里少了这类干扰，对比对它略有利。每次检索多出的约 450 token 主要是功能记录标题（v0.3 没有），另有字段说明，真实对话里每个对话只给一次。耗时多出的几毫秒主要来自 v0.4 起更严的过期核对。父子模块的继承效果还没测。</p>
+  <div class="callout warn">还没测：pmem 对改代码质量的端到端提升。可以用 <code>pmem bench</code> 做对照实验，或真实使用 2–4 周后看 <code>pmem report</code>。</div>
+
+  <div class="grid2">
+    <div class="card">
+      <h4>非常适合</h4>
+      <ul>
+        <li>长期维护的中大型项目，同类问题反复出现</li>
+        <li>多人协作、人员流动，经验要沉淀到仓库</li>
+        <li>排查型工作多：崩溃、数据错乱、偶现 bug</li>
+        <li>同时用 Cursor、Claude Code、Codex</li>
+        <li>对数据外流敏感；或使用 SVN 的项目</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>不太适合</h4>
+      <ul>
+        <li>一次性脚本、小 demo，没有可积累的坑</li>
+        <li>纯问答、不改代码：pmem 不会在提问时自动注入记忆</li>
+        <li>要求零配置：需要先划分模块（可交给 AI 完成）</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 核心概念 ============ -->
+<section id="concepts">
+  <h2>核心概念</h2>
+  <div class="grid2">
+    <div class="card">
+      <h4>模块 module</h4>
+      <p>格式 <code>category.Module</code>，如 <code>gameplay.Jigsaw</code>；子模块用点号续写，最多 4 段（见下文“父子模块”）。模块是业务单元而不是目录，可以包含多个路径、起别名。定义在 <code>.memory/modules.yaml</code>。</p>
+    </div>
+    <div class="card">
+      <h4>议题 entity</h4>
+      <p>模块内的子话题，如 <code>Reward</code>、<code>Config</code>。检索时议题匹配会加分。</p>
+    </div>
+    <div class="card">
+      <h4>记忆条目</h4>
+      <p>一条记忆一个文件：<code>.memory/entries/&lt;模块&gt;/&lt;ULID&gt;.md</code>。ULID 是按时间排序的唯一编号。写入后正文不再修改。</p>
+    </div>
+    <div class="card">
+      <h4>替代 supersedes</h4>
+      <p>要推翻旧结论就新写一条，在 <code>supersedes</code> 里填旧 id。旧的自动从检索中隐藏，但文件仍保留在版本库，可按时间回溯。</p>
+    </div>
+    <div class="card">
+      <h4>关联代码 anchors 与过期 stale</h4>
+      <p><code>anchors</code> 记录相关代码（<code>文件#方法</code>）。代码在记忆写下后改过或被删，检索结果标 <code>stale: true</code>，提示用前先核对。</p>
+    </div>
+    <div class="card">
+      <h4>别名 aliases 与同义词 synonyms</h4>
+      <p>写记忆时把现象的其他叫法填进 <code>aliases</code>；团队常用同义叫法登记在 <code>modules.yaml</code> 的 <code>synonyms</code>，检索时自动扩展。</p>
+    </div>
+    <div class="card">
+      <h4>状态 status</h4>
+      <p><code>active</code> 正式；<code>seed</code> 种子，从提交说明和文档提炼、待负责人确认，能检索到并标“种子，待确认”；<code>draft</code> 草稿（<code>write.default_status: draft</code> 时）；<code>archived</code> 已归档，不再出现在检索里，它替代过的旧记忆也保持隐藏。归档时记下日期和原状态：带 <code>as_of</code> 回看时，那天之后才归档的仍然可见；恢复时回到原状态（退回的种子恢复后仍是种子）。</p>
+    </div>
+  </div>
+
+  <h3>父子模块</h3>
+  <p>大业务需要细分时，子模块用点号续写名字，最多 4 段（大类 + 3 层），父子关系由名字表达，不需要另写 <code>parent</code>。以“4 个广告 SDK、每个 SDK 有自己的渠道、iOS 和 Android 打入的 SDK 不同”为例：</p>
+  <pre><code>modules:
+  system.Ads:                  # 父模块：广告公共逻辑（瀑布流、隐私弹窗时机）
+    paths: [Framework/Ads/Core/**]
+  system.Ads.AdMob:            # 子模块：AdMob 适配
+    paths: [Framework/Ads/AdMob/**]
+  system.Ads.AdMob.Mediation:  # 第 4 段：AdMob 下的聚合渠道
+    paths: [Framework/Ads/AdMob/Mediation/**]
+  infra.Build:
+    paths: [Build/**]
+    related:                   # 名字看不出的深层关联
+      - { module: system.Ads, reason: 打包按平台选择打入的广告 SDK }</code></pre>
+  <ul>
+    <li><b>查</b>：查子模块会带上各级上级模块的教训（在本模块的 5 条之外另给最多 2 条，<code>search.inherit_max</code> 可调；本模块教训不够 5 条时空出的位置也给上级），结果标“上级 <code>system.Ads</code>”；功能记录不继承。查父模块时附上各下级模块的条数和最新 5 条记忆的标题（含更下级，教训和功能记录都算），不给全文：问“广告系统整体情况”时一次看到各 SDK 的要点，要细节再查对应子模块。</li>
+    <li><b>写</b>：结论写在适用的最高一层，对所有 SDK 都成立的写到 <code>system.Ads</code>。兄弟模块写了同议题的教训时，写入结果会提示改写到父模块；父模块的记忆可以 <code>supersedes</code> 下级的，反过来不行。</li>
+    <li><b>闸门</b>：子模块自己没有记忆、但上级有教训时同样拦截，拦截提示里附上上级的坑。</li>
+    <li><b>登记</b>：父模块必须先登记（可以只作分组、不写路径），文件归属按最具体的路径。父模块已登记时，写入未登记的子模块名也会接受。</li>
+    <li><b>平台和渠道不是一层</b>：iOS/Android、渠道、版本差异写进记忆的 <code>applies</code>；只有各自有独立代码目录时才拆成子模块。</li>
+    <li><b>维护</b>：<code>pmem migrate rename</code> 改父模块时子模块跟着改名；<code>pmem sync</code> 会提议把大模块里文件多或改动多的子目录拆成子模块（只提示）；<code>pmem health</code> 的“父子模块结构”一节列出缺父模块、只有一个下级的空父模块、兄弟模块重复的教训等。团队成员需升级到支持父子模块的 pmem，旧版仍能读写已登记的子模块，但没有上级教训继承。</li>
+  </ul>
+
+  <h3>五种记忆类型（kind）</h3>
+  <table>
+    <tr><th>kind</th><th>含义</th><th>典型场景</th></tr>
+    <tr><td class="kind">conclusion</td><td>结论</td><td>根因确认、改完验证通过后的结论</td></tr>
+    <tr><td class="kind">exclusion</td><td>排除项</td><td>某个方向试过不行，别再走（检索时略微加分）</td></tr>
+    <tr><td class="kind">correction</td><td>更正</td><td>旧结论已不成立，配合 <code>supersedes</code>（检索时略微加分）</td></tr>
+    <tr><td class="kind">risk</td><td>风险</td><td>改动这里要注意的坑</td></tr>
+    <tr><td class="kind">decision</td><td>决定</td><td>方案选型和取舍理由</td></tr>
+    <tr><td class="kind">feature</td><td>功能</td><td>功能记录：改了模块就写。需求来源、必须保持的行为、适用条件、入口；检索时只列标题</td></tr>
+    <tr><td class="kind">plan</td><td>规划</td><td>还没实现的需求，不当现状；实现后由功能记录替代</td></tr>
+  </table>
+  <p>前五种是<b>教训</b>，检索时给全文、排在前面；后两种是<b>功能记录</b>，检索时单独一组、只给标题（默认最多 3 条，<code>search.feature_limit</code> 可调），要全文按 id 取。这样功能记录写得再多也不会挤掉教训。</p>
+
+  <h3>一条记忆长什么样</h3>
+  <pre><code>---
+id: 01M4X6AZN6N1AX9M6E6P34SRX4
+module: gameplay.Jigsaw
+entity: Reward
+kind: exclusion
+author: zhangsan
+note_date: '2026-10-14'
+anchors: [Assets/Game/Jigsaw/JigsawReward.cs#Claim]
+summary: 断线重连重复发奖的根因在服务端，不要在客户端去重
+verify: 断线重连后领取，服务端日志只有一次发奖
+---
+拼图奖励在断线重连时会重复发放：服务端 Claim 接口没有按关卡做幂等校验……不要在客户端做去重。</code></pre>
+  <p>可选字段：</p>
+  <ul>
+    <li><code>summary</code>：一句话标题（60 字以内）。读代码摘要、拦截提示、Wiki 和同一对话里的重复检索只显示它；没填时取正文第一句并去掉“决定：”这类前缀。</li>
+    <li><code>verify</code>：怎么确认问题已解决或结论仍成立（命令、测试名、现象），下次遇到同样的问题直接验证。</li>
+    <li><code>applies</code>：自由文字前提（平台、配置、版本、场景，120 字以内）。检索结果会提醒 AI 先判断前提是否满足，不满足就不套用。能枚举的前提优先写 <code>when</code>。</li>
+    <li><code>when</code>：结构化适用条件（如 <code>platform: [android]</code>）。需在 <code>config.yaml</code> 声明 <code>facets</code>（枚举列表或 <code>str</code>）；写入按声明校验，检索带同维度条件时排除明确冲突的条目，没写 <code>when</code> 的仍返回。未声明 <code>facets</code> 时不可用。</li>
+    <li><code>enforced_by</code>：已由工程规则保障（路径#规则名，写法同 anchors）。规则文件改了会标需核实；摘要标「已由规则拦截」并靠后排，名额优先给仍需靠记忆防的坑。<code>pmem health</code> 会列出可写成规则的教训议题。</li>
+    <li><code>scope: project</code>：全项目都会踩的坑（编码、环境、跨模块约定）。读任何模块的代码时，都会附上本对话还没给过的至多 3 条全项目级排除项、风险、更正，Wiki 首页单列“全项目通用”。</li>
+  </ul>
+  <p class="muted">旧版 pmem 读写带这些字段的文件不会丢字段；但 <code>feature</code>、<code>plan</code> 两种类型需要新版本才认得，旧版会跳过这类文件，团队请一起升级。</p>
+</section>
+
+<!-- ============ 接入 ============ -->
+<section id="onboard">
+  <h2>在其他项目接入</h2>
+  <div class="callout">
+    前提：已安装 <a href="https://docs.astral.sh/uv/">uv</a>（Python 包管理工具）、Python ≥ 3.10，以及 Cursor、Claude Code、Codex 中至少一个。项目用 Git、SVN 或都不用均可。
+  </div>
+
+  <ol class="steps">
+    <li>
+      <strong>安装 pmem</strong><span class="tag once">每人一次</span>
+      <p>本机已经装好（以可编辑模式从本仓库安装，改本仓库代码立即生效），可以跳过。其他同事按下面任一方式安装：</p>
+      <pre><code><span class="c"># 方式 A：从 GitHub 安装（推荐团队使用）</span>
+uv tool install "pmem[embed] @ git+https://github.com/mry-ship/pmem"
+
+<span class="c"># 以后升级到最新版（不生效时用第二行强制重装）</span>
+uv tool upgrade pmem
+uv tool install --reinstall "pmem[embed] @ git+https://github.com/mry-ship/pmem"
+
+<span class="c"># 方式 B：拿到本仓库源码目录后，在该目录里执行</span>
+uv tool install --editable ".[embed]"
+
+<span class="c"># 验证</span>
+pmem --version</code></pre>
+      <p class="muted"><code>[embed]</code> 启用中文语义检索，首次使用下载约 90 MB 模型，所有项目共用。去掉它则只用关键词检索。</p>
+    </li>
+    <li>
+      <strong>在目标项目根目录初始化</strong><span class="tag each">每个项目一次</span>
+      <pre><code>cd D:\Work\MyGame
+pmem init --type game                     <span class="c"># 项目类型：game / app / backend / generic，决定默认模块大类</span>
+pmem init --agents cursor,claude,codex    <span class="c"># 指定接入哪些工具；默认 auto</span>
+pmem init --gate warn                     <span class="c"># 闸门力度：block（默认）/ warn / off，只在首次生成 config.yaml 时生效</span></code></pre>
+      <p>重复运行 <code>pmem init</code>（如升级后）只更新它生成的规则、技能、Hook 和 MCP 配置，不覆盖 <code>config.yaml</code>、<code>modules.yaml</code>。这时再给 <code>--gate</code>、<code>--type</code> 不会生效，输出里会单独列出，改闸门力度、项目类型请直接改 <code>config.yaml</code>。</p>
+      <p>规格提醒默认不提示。首次生成 <code>config.yaml</code> 时，在终端里问要不要开启：输入 y 开启，直接回车保持关闭。脚本或 Agent 接入时不询问，保持关闭，并打印怎么改。再次运行不再问。</p>
+      <p><code>auto</code> 总会接入 Cursor；项目里已有 <code>.claude/</code> 或 <code>CLAUDE.md</code> 时接入 Claude Code，已有 <code>.codex/</code> 或 <code>AGENTS.md</code> 时接入 Codex。已有配置只合并不覆盖。</p>
+      <table>
+        <tr><th>工具</th><th>生成的文件</th></tr>
+        <tr><td>公共</td><td><code>.memory/config.yaml</code>、<code>.memory/modules.yaml</code>、<code>.memory/entries/</code></td></tr>
+        <tr><td>Cursor</td><td><code>.cursor/rules/pmem.mdc</code>、<code>.cursor/skills/pmem-*</code>、<code>.cursor/hooks.json</code>、<code>.cursor/mcp.json</code></td></tr>
+        <tr><td>Claude Code</td><td><code>CLAUDE.md</code> 中的 pmem 段落、<code>.claude/skills/pmem-*</code>、<code>.claude/settings.json</code>、<code>.mcp.json</code></td></tr>
+        <tr><td>Codex</td><td><code>AGENTS.md</code> 中的 pmem 段落、<code>.agents/skills/pmem-*</code>、<code>.codex/hooks.json</code>、<code>.codex/config.toml</code></td></tr>
+      </table>
+      <p>Claude Code 的 Hook 同时守护 Windows 上的 <code>PowerShell</code> 工具，并带 <code>"onFailure": "continue"</code>：没装 Git Bash 或 pmem 时 Hook 起不来也照常放行，不会卡住所有修改（这时闸门不生效，<code>pmem doctor</code> 会提示）。旧版接入请重新运行 <code>pmem init</code>。</p>
+    </li>
+    <li>
+      <strong>在工具里启用 MCP</strong><span class="tag manual">每人一次，手动</span>
+      <ul>
+        <li><strong>Cursor</strong>：设置 → MCP，把 <code>pmem</code> 打开。这一步只能手动完成。</li>
+        <li><strong>Claude Code</strong>：首次打开项目时批准 <code>.mcp.json</code> 里的 pmem 服务；<code>/hooks</code> 可查看已接入的 Hook。</li>
+        <li><strong>Codex</strong>：先信任本项目，再在 <code>/hooks</code> 里审阅并信任 pmem 的 Hook。</li>
+      </ul>
+    </li>
+    <li>
+      <strong>划分模块</strong><span class="tag each">每个项目一次</span>
+      <p>在 Cursor 里对 Agent 说：<strong>“按 pmem-bootstrap 技能划分模块”</strong>。它会运行 <code>pmem scan</code> 扫描目录和近 180 天提交热度，先用表格给你确认，再写入 <code>.memory/modules.yaml</code>，并用 <code>pmem doctor</code> 把覆盖率做到 95% 以上。</p>
+      <pre><code>modules:
+  gameplay.Jigsaw:
+    paths: ["Assets/Game/Jigsaw/**", "Assets/UI/JigsawPanel/**"]
+    aliases: [Puzzle]
+    entities: [Reward, Config]
+synonyms:
+  - [闪退, 崩溃, crash]
+third_party: []   <span class="c"># 第三方 SDK，不参与闸门</span>
+ignored: []       <span class="c"># 生成代码等</span></code></pre>
+    </li>
+    <li>
+      <strong>自检并提交</strong><span class="tag each">每个项目一次</span>
+      <pre><code>pmem doctor     <span class="c"># 检查配置、模块覆盖率、各工具接入、语义模型（顺便预下载模型）</span>
+git add .memory .cursor
+git commit -m "接入 pmem"</code></pre>
+      <p>接入了 Claude Code 或 Codex 的话，把对应文件一并提交。SVN 项目同理用 <code>svn add</code> / <code>svn commit</code>。</p>
+    </li>
+    <li>
+      <strong>（建议）提炼种子记忆</strong><span class="tag each">每个项目一次</span>
+      <p>对 Agent 说：<strong>“按 pmem-seed 技能提炼种子记忆”</strong>。它用 <code>pmem seed --plan</code> 找出最常改的模块，从提交说明、文档和代码注释里为每个模块提炼 10～20 条结论，写成种子记忆。负责人运行 <code>pmem seed</code> 过目，<code>pmem seed --accept --module &lt;模块&gt;</code> 转正，不要的 <code>pmem seed --reject &lt;id&gt;</code>。这样记忆库不是从空开始。</p>
+    </li>
+  </ol>
+
+  <div class="callout ok">
+    <strong>团队其他人</strong>拉下代码后只需要做第 1 步（安装）和第 3 步（启用 MCP）。
+  </div>
+  <div class="callout warn">
+    <strong>已有旧的记忆系统</strong>（比如 LanceDB 版的 tilematch-dev-memory）？先完成第 1～5 步，再看 <a href="#import">迁移旧记忆</a>。
+  </div>
+</section>
+
+<!-- ============ 日常使用 ============ -->
+<section id="daily">
+  <h2>日常使用</h2>
+  <p>正常写需求、修 bug 即可，基本不用手动操作。一次典型对话的流程（左侧色带是环节，①②③ 是 Agent 要主动做的三步）：</p>
+  <p><img src="images/pmem-flow.svg" alt="一次对话的流程：接手 → 改前查 → 改代码 → 写结论 → 提交共享" style="width:100%;max-width:1040px;height:auto;border:1px solid #d0d7de;border-radius:8px;background:#fff"></p>
+  <div class="flow">
+    <div class="node"><b>1. 改代码前查</b>Agent 按要改的文件调用 <code>search_memory(path=...)</code>，同一模块一个对话查一次。</div>
+    <div class="arrow">→</div>
+    <div class="node"><b>2. 用之前核对</b>结果带 <code>stale: true</code> 的，打开关联代码核对；仍成立就 <code>confirm_memory</code>，不成立写 correction。</div>
+    <div class="arrow">→</div>
+    <div class="node"><b>3. 按模块写</b>每个改过的模块写一条功能记录（谁要求的、为什么、必须保持的行为）；另有试过不行的方向、根因和坑、看代码看不出的约束、方案取舍时，各写一条教训。只改测试、生成代码、配置的不用写。</div>
+    <div class="arrow">→</div>
+    <div class="node"><b>4. 结束追问</b>AI 在回复开头写“【pmem检索】模块（要点）”，结尾分行写“【pmem查询】模块，用到「…」”和“【pmem修改】模块 已写功能记录「…」；模块 无需记录（原因）”。只有改了模块却既没写记忆、也没在结尾说明无需记录时，回合结束才追加提醒。不需要你回复。Cursor 会把它显示成一条以“[pmem]”开头的用户消息，由 AI 处理。</div>
+  </div>
+  <p><b>新目录自动登记</b>（v0.5.1）：AI 改到没登记的代码目录、或会话开始时，Hook 在后台扫描并追加到 <code>modules.yaml</code>，AI 会在回复里告诉你“这次新增了几个模块、几个冷候选”；记得把 <code>.memory/modules.yaml</code> 一起提交。真正写入新模块时，会给还没有规格的模块铺四份空骨架，正文不在这里写。细节见“整理与维护 → 目录同步”。</p>
+  <p><b>记忆医生</b>（v0.6.1）：接入后约每 24 小时后台跑一次 <code>pmem doctor</code>，不阻塞对话，也不改记忆文件。有问题才让 AI 提一行（例如未提交的记忆、覆盖率不足），需要时再手动跑一遍看全文。对外帮助里这条命令仍然只有 <code>--root</code>。</p>
+  <p><b>模块规格</b>：<code>.memory/specs/&lt;模块&gt;/</code> 里四份文件记这个模块现在的完整策划、完整美术、完整程序、完整现状，和 Wiki 分开，进版本库。划分模块后对 AI 说“补全模块规格”，或跑 <code>pmem spec complete</code>（<code>fill</code> 是旧名）。这条命令列出缺谁，正文由技能写到九成八。之后某一轮改了这个模块，对 AI 说更新这个模块的规格，它只改变了的段落，已有内容留在原处。规格提醒默认不提示。没有画面的美术文件写「本模块无画面」。</p>
+
+  <h3>写记忆的约定</h3>
+  <ul>
+    <li>正文自包含：教训写现象、原因、证据、影响范围；功能记录写需求来源、必须保持的行为、适用条件、入口。都不写“改了哪个方法”这类版本库已有的信息。</li>
+    <li>写一句 <code>summary</code>（教训写结论，功能记录写“什么行为必须保持”）；结论和更正尽量写 <code>verify</code>；有前提的写 <code>applies</code>；改哪里都会踩的坑加 <code>scope: project</code>。没填 summary、决定没写取舍、读起来像变更记录、功能记录没写需求来源时，写入会返回提示（不拒绝）。</li>
+    <li>还没实现的需求写成 <code>plan</code>；实现后写功能记录并在 <code>supersedes</code> 填那条规划的 id。</li>
+    <li>正文 20～5000 字，超过 600 字会提示精简。不写密码、密钥、个人信息，含疑似密钥会被拒绝。</li>
+    <li>写入会返回 <code>similar</code>（同模块最相近的已有记忆）：重复或推翻了某条，就带 <code>draft_id</code> 重写并在 <code>supersedes</code> 填旧 id。</li>
+    <li>同一任务对同一模块只留一条：再次写入时带上次返回的 <code>draft_id</code> 覆盖。覆盖时没填的 <code>supersedes</code>、<code>anchors</code>、<code>aliases</code>、<code>summary</code>、<code>verify</code>、<code>applies</code>、<code>scope</code> 沿用原值。</li>
+    <li>同一议题每天最多写 5 条，防止刷屏。</li>
+  </ul>
+
+  <h3>常用说法</h3>
+  <table>
+    <tr><th>你对 Agent 说</th><th>效果</th></tr>
+    <tr><td>跳过记忆</td><td>本次对话不查也不写，闸门放行；AI 第一次读代码时会说明记忆已关闭</td></tr>
+    <tr><td>恢复记忆</td><td>撤销本对话的“跳过记忆”</td></tr>
+    <tr><td>按 pmem-bootstrap 技能划分模块</td><td>首次生成 <code>modules.yaml</code></td></tr>
+    <tr><td>按 pmem-compact 技能合并记忆</td><td>把同一议题的零碎记忆合并成一两条现状</td></tr>
+    <tr><td>按 pmem-normalize 技能整理同义词</td><td>找出同一件事的不同叫法，登记同义词组</td></tr>
+    <tr><td>按 pmem-seed 技能提炼种子记忆</td><td>为常改的模块从提交说明、文档里提炼一批待确认的结论</td></tr>
+    <tr><td>按 pmem-consolidate 技能整理记忆库</td><td>按健康报告逐节收口：矛盾的结论写更正或确认、过时的核对或归档、零碎的合并、种子过目、模块目录整理</td></tr>
+  </table>
+</section>
+
+<!-- ============ 闸门 ============ -->
+<section id="gate">
+  <h2>闸门（Hooks）</h2>
+  <p>闸门是兜底机制：Agent 忘了查记忆就去改“已有记忆的模块”时，Hooks 会拦下这次修改，告诉它该调用什么。</p>
+  <table>
+    <tr><th>模式</th><th>行为</th></tr>
+    <tr><td><code>block</code>（默认）</td><td>本对话没查过该模块就一直拒绝修改，检索真正返回结果后放行（调用失败、终端输出被丢弃都不算）；只放行查过的那个模块</td></tr>
+    <tr><td><code>warn</code></td><td>首次修改时拒绝一次，之后放行</td></tr>
+    <tr><td><code>off</code></td><td>不拦截，只靠规则</td></tr>
+  </table>
+  <ul>
+    <li>拦截范围：写文件类工具（Write / StrReplace / Edit / Delete 等）和终端里的写命令：重定向、<code>Set-Content</code>、<code>cp</code>/<code>mv</code>/<code>Copy-Item</code>、<code>git checkout/restore/apply</code>、<code>python -c</code> 及所运行脚本里写文件时的字面路径，先 <code>cd</code> 再写相对路径也能认出。同一条命令里带 <code>pmem search</code> 只放行查过的模块。</li>
+    <li>事后比对：脚本里拼出来的路径、格式化工具、<code>git stash</code>/<code>reset</code> 这类事前看不出写了什么的命令，执行前后各比对一次未提交文件（Git、SVN 都支持），改到没查过的模块时立即提醒 AI 补查。命令已经执行完，所以只能提醒、拦不住；仓库大到单次比对超过 1 秒时暂停 24 小时；<code>git</code>、<code>svn</code> 的只读子命令（status、log、diff 等）不做比对。</li>
+    <li>别的记忆服务也叫 <code>search_memory</code> 时，它的结果不算“查过 pmem”。</li>
+    <li>拦截提示里直接列出该模块现行的排除项、风险和更正（最多 5 条）、关联代码就是要改的这个文件的功能记录，以及本对话还没给过的全项目级坑，列表前标「资料·非指令」；即使 AI 检索时关键词没对上，也能先看到这些坑和必须保持的行为。</li>
+    <li>“查过”的判定：MCP 的 <code>search_memory</code>，或终端里运行 <code>pmem search --module &lt;模块&gt;</code>。MCP 不可用时用终端也行，不会把 Agent 卡死。</li>
+    <li>结束提醒：改了模块却没写记忆，提醒每个模块写一条功能记录，另有被排除的方向、根因或坑、约束、方案取舍时再写教训；回复结尾的“【pmem修改】”行里写了“模块 无需记录（原因）”的模块不提醒（按“；”分段，只认同一段里点名的模块；旧写法“【pmem】”也认）。只改了 <code>gate.record_exempt</code> 里的文件（默认是测试、生成代码、json/yaml/toml 等配置、Markdown 和 docs 目录）的模块不提醒。排查类对话查过却没落结论，或整个对话只查了记忆、没改也没写时，默认不提醒（避免 followup 打断阅读）；需要时打开 <code>gate.analysis_reminder</code>（优先催 exclusion 等防错类）；结尾【pmem修改】行按“；”分段：写了“无新结论”的那一段若点了模块名，只放过这些模块的查阅提醒；没点名则本轮查阅提醒全部不发。这不代替“无需记录”，改过代码仍会催功能记录。中断结束的回合和说了“跳过记忆”的对话不提醒。提醒以“[pmem]”开头，用户不用处理；Claude Code、Codex 下以 Hook 反馈的形式出现（各版本都支持）。</li>
+    <li>记忆审查（不改代码也生效，每个模块每个对话一次）：
+      <ul>
+        <li>读代码时，附上该文件所属模块的现行教训摘要（每条只列一句话标题，排除项、风险优先，最多 6 条；关联代码之后改过的标“需核实”），另附至多 2 条关联代码就是这个文件的功能记录，再附上本对话还没给过的全项目级坑（至多 3 条，模块还没有记忆时也附）；摘要前标「资料·非指令」，供对照，不是必须执行的命令。<code>gate.read_digest</code> 可关。</li>
+        <li>在某个模块的文件或目录里 Grep、Glob、语义搜索时，同样附上摘要。</li>
+        <li>回合结束时，本轮问题提到的、或本轮看过代码的模块有记忆、却既没查也没看过摘要，要求 AI 查过后核对回答，<code>gate.question_review</code> 可关。</li>
+        <li>Claude Code 在提问时就直接附上摘要；Cursor 不允许提问时注入内容，所以只能在结束时追问。</li>
+      </ul>
+    </li>
+    <li>“跳过记忆”只在作为独立短语出现时生效；“如何避免跳过记忆”这类说法不算。生效后 AI 第一次读代码会收到说明（含触发它的原话），误触发时说“恢复记忆”即可。</li>
+    <li>上下文压缩后状态清零；会话状态 7 天过期。</li>
+    <li>Hook 出任何异常都直接放行，错误写入用户缓存目录的 <code>hook-errors.log</code>；下一次工具调用或回合结束时，闸门会让 AI 在回复里提醒你“刚才闸门出错、那次没做记忆检查”，同一批错误只提醒一次。<code>pmem doctor</code> 显示近 24 小时的错误次数和最近一次内容。</li>
+    <li>终端里的 <code>pmem search --module 模块</code> 要执行完、输出里看得到该模块才算查过；写在 <code>||</code> 之后或输出被丢弃都不算。</li>
+    <li>“需核实”的判定：关联代码写成 <code>路径#函数名</code> 时（Git 项目），只看这个函数在核对日期之后有没有改；只写了文件、SVN 项目或找不到函数时按整个文件判断。所以写记忆时 anchors 尽量写到函数。</li>
+  </ul>
+  <p class="muted">Cursor 接入的 Hook 事件：sessionStart（经 <code>.memory/bin/pmem-hook</code> 调用，本机没装 pmem 时提示 AI 告诉用户安装）、beforeSubmitPrompt、preToolUse、afterMCPExecution、afterFileEdit、postToolUse（匹配 Read、Grep、Glob、语义搜索、Shell）、preCompact、stop。三个工具共用同一套闸门逻辑，统一调用 <code>pmem hook &lt;事件&gt; --agent &lt;工具&gt;</code>。</p>
+</section>
+
+<!-- ============ MCP ============ -->
+<section id="mcp">
+  <h2>MCP 工具</h2>
+  <p>MCP（Model Context Protocol，AI 调用外部工具的协议）服务由 <code>pmem serve</code> 提供，Agent 通过下面 5 个工具读写记忆。服务自带看门狗：崩溃、卡死（单次调用超过 <code>server.request_timeout</code>，默认 120 秒）或 pmem 升级后自动重启并重新握手，Cursor 不用手动重连；当时正在进行的调用会返回错误，重试即可。</p>
+  <table>
+    <tr><th>工具</th><th>用途</th><th>主要参数</th></tr>
+    <tr><td><code>search_memory</code></td><td>检索记忆。改代码前按文件或模块查一次</td><td><code>path</code> 或 <code>module</code>；可选 <code>entity</code>、<code>query</code>、<code>limit</code>（默认 5，上限 10）、<code>as_of</code>（按某天视角查）、<code>full</code>（本对话给过的也返回全文）、<code>ids</code>（按 id 取全文，给了就忽略其他条件）、<code>when</code>（结构化条件过滤，需 config facets）</td></tr>
+    <tr><td><code>record_memory</code></td><td>写入一条记忆</td><td><code>module</code>、<code>entity</code>、<code>kind</code>、<code>content</code>；可选 <code>summary</code>、<code>verify</code>、<code>applies</code>、<code>when</code>、<code>enforced_by</code>、<code>scope</code>、<code>supersedes</code>、<code>anchors</code>、<code>aliases</code>、<code>draft_id</code></td></tr>
+    <tr><td><code>confirm_memory</code></td><td>核对后确认仍然成立，刷新核对日期</td><td><code>ids</code></td></tr>
+    <tr><td><code>memory_graph</code></td><td>模块全貌：每个议题的最新两条结论（过期的带 <code>stale</code>）和相关模块；带 <code>entity</code> 时看该议题的时间线（谁哪天替代了谁）</td><td><code>module</code>；可选 <code>entity</code></td></tr>
+    <tr><td><code>list_modules</code></td><td>列出模块、记忆数量和常用议题</td><td>可选 <code>category</code></td></tr>
+  </table>
+  <p>检索结果里几个关键字段：<code>items</code>（教训，全文）、<code>features</code>（功能记录和规划，只有标题；改动会改变这些行为时先用 <code>ids</code> 取全文核对）、<code>applies</code>（自由文字适用条件）、<code>when</code>（结构化适用条件）、<code>stale</code>（关联代码已变）、<code>check</code>（具体哪些文件变了）、<code>fallback: module</code>（议题内没命中，退回整个模块）、<code>related</code>（相关模块）、<code>status</code>（只在不是正式记忆时出现，如 <code>seed</code>）、<code>seen</code>（本对话已返回过全文，这次只给标题；上下文里找不到原文时带 <code>full=true</code> 重查）。同一对话的去重记录在上下文压缩后清空；终端里的 <code>pmem search</code> 由 Hook 在执行前交接对话 id，同样参与去重。MCP 不提供改状态的工具，转正、退回、归档只能由人在命令行操作。</p>
+</section>
+
+<!-- ============ CLI ============ -->
+<section id="cli">
+  <h2>命令行</h2>
+  <table>
+    <tr><th>命令</th><th>用途</th></tr>
+    <tr><td><code>pmem init</code></td><td>在项目中接入（生成 <code>.memory/</code> 和各工具配置）</td></tr>
+    <tr><td><code>pmem doctor</code></td><td>自检：配置、模块覆盖率、路径重叠、各工具接入、语义模型、可合并议题、配置/modules 拼错键提示、最近 Hook 错误（含字段类型不对）。接入后约每 24 小时后台巡检一次，有问题才提一行；只检查、不改库</td></tr>
+    <tr><td><code>pmem scan</code></td><td>输出目录概览和提交热度，供 Agent 划分模块</td></tr>
+    <tr><td><code>pmem search</code></td><td>检索：<code>--path</code> / <code>--module</code> / <code>--entity</code> / <code>--as-of</code> / <code>--when platform=android</code>，加关键词；<code>--brief</code> 每条一行（<code>graph</code>、<code>record</code> 同样支持）；同一对话里给过全文的记忆再查到只显示标题，<code>--full</code> 取全文；<code>--id</code> 按 id 取全文</td></tr>
+    <tr><td><code>pmem record</code></td><td>写入一条记忆，规则与 MCP 相同；长正文用 <code>--content-file</code>；<code>--alias</code>、<code>--anchor</code>、<code>--supersedes</code> 可跟多个值；<code>--seed</code> 写成种子记忆；<code>--kind feature</code> 写功能记录，<code>--summary</code> 一句话标题，<code>--verify</code> 怎么验证，<code>--applies</code> 适用条件，<code>--when platform=android</code> 结构化条件（需 config facets），<code>--scope project</code> 标为全项目都会踩的坑（读任何模块的代码时都会附上）</td></tr>
+    <tr><td><code>pmem confirm &lt;id&gt;...</code></td><td>核对后确认仍然成立</td></tr>
+    <tr><td><code>pmem seed</code></td><td>列出待确认的种子记忆；<code>--plan</code> 看候选模块；<code>--accept</code>（给 id、<code>--module</code> 或 <code>--all</code>）转正；<code>--reject &lt;id&gt;</code> 退回（归档）</td></tr>
+    <tr><td><code>pmem archive &lt;id&gt;...</code></td><td>归档：不再出现在检索里，文件保留；<code>--restore</code> 恢复到归档前的状态</td></tr>
+    <tr><td><code>pmem migrate rename|merge|split|deprecate|tidy</code></td><td>模块改名、合并、拆分，把记忆文件搬到新模块名下；<code>split A --to 新模块=路径[,路径]</code> 可写多次，<code>--by entity</code> 按议题拆，<code>--assign id=模块</code> 指定个别记忆的去向；<code>deprecate</code> 把模块标为只读（<code>--undo</code> 撤销）；<code>tidy</code> 只搬还在旧名下的记忆。默认预览，<code>--apply</code> 执行；<code>--root</code>、<code>--apply</code> 写在子命令之后</td></tr>
+    <tr><td><code>pmem sync</code></td><td>对照代码目录列出新模块、新冷候选、要给已有模块追加的路径、新的第三方目录和可转正的冷候选；默认预览，<code>--apply</code> 只追加、不改已有模块名。<code>--auto edit|session|full</code> 是 Hook 在后台调用的自动同步（按 <code>sync.auto</code>，<code>full</code> 强制带热度的完整扫描）；<code>--history</code> 列出本机最近 20 次自动登记各新增了几个模块</td></tr>
+    <tr><td><code>pmem context [--refresh] [文件]</code></td><td>harness 实验：从版本历史缓存列出某文件常一起改的伙伴与近期修复（不依赖记忆）；<code>--refresh</code> 重算缓存（大项目可能较慢；开了 <code>harness.mode</code> 后新对话开始时也会后台算）；加 <code>--json</code> 输出原始数据</td></tr>
+    <tr><td><code>pmem health [--days 60]</code></td><td>健康报告：未登记和疑似重复的模块、还在旧模块名下的记忆、无归属的代码目录、检索落空热点、可能过时的记忆、疑似互相矛盾的记忆、没人检索的模块、被拒绝的写入、待确认的种子、改了代码却没写功能记录的模块、建议归档与清理待核对、召回偏低的模块</td></tr>
+    <tr><td><code>pmem map [--out 文件] [--days 30] [--json]</code></td><td>记忆演化图：默认写 Wiki 目录下的 <code>map.html</code>（单文件、不联网，可缩放、拖动、按类型筛选、只看现行，点节点看全文），终端打印总评和自检（漏记、断链、悬而未决、过期）；<code>--days</code> 是漏记统计的天数，<code>--json</code> 输出图数据。配置里的 Wiki 目录指到项目外时拒绝并返回 2；<code>--out</code> 可以指到别处</td></tr>
+    <tr><td><code>pmem graph --module X</code></td><td>模块全貌，或某议题的时间线</td></tr>
+    <tr><td><code>pmem wiki [--out 目录]</code></td><td>生成每模块一页的 Markdown Wiki（默认 <code>.memory/wiki/</code>）：议题、现行结论、历史、相关模块、代码链接，过期的标“需核实”；只覆盖它自己生成的页面，页面文件名只能是合法模块名，不能写出输出目录。配置里的目录指到项目外时拒绝并返回 2；<code>--out</code> 可以指到项目外，但页面仍不能跳出那个目录。写入或确认记忆后会自动运行（<code>wiki.auto</code>）；自动生成时目录在项目外则只警告、记忆仍写入</td></tr>
+    <tr><td><code>pmem spec [init|index|fill|complete] [--check]</code></td><td>模块规格（默认 <code>.memory/specs/&lt;模块&gt;/</code>，四份分开：策划、美术、程序、现状，进版本库，与 Wiki 分开）。给美术只拷 <code>美术设计.md</code>。不加参数只列出完成情况；<code>init</code> 给还没有的那一份写骨架，不覆盖已写正文；<code>complete</code> 是补全模块规格的入口：铺骨架并列出首稿还没写完的模块（有未完成时返回 1），完整正文由技能按代码写到九成八；程序/现状是否未完成只认整行的空标记 <code>&lt;!-- spec:empty --&gt;</code>，正文里用反引号提到该字面量不算未完成；<code>fill</code> 是 <code>complete</code> 的旧名；<code>index</code> 只刷新总目录和各模块 <code>index.md</code> 里的上下级、代码路径，留空列标出策划或美术仍留空、以及缺了那一份，不因此改变完成状态；<code>--check</code> 有模块没完成首稿时返回 1。策划、美术、程序、现状由 <code>pmem-spec</code> 技能写；没有画面的美术节写「本模块无画面」，不因此算未完成。目录指到项目外时返回 2。<code>pmem init</code>、以及 <code>pmem sync --apply</code> 和自动登记真正写入新模块时，都会补上还没有的骨架，不写正文。规格提醒默认不提示；要在回合结束提醒更新规格，把 <code>spec.reminder</code> 设为 true。只改了未登记进模块路径的资源时，这次提醒不会响</td></tr>
+    <tr><td><code>pmem list</code></td><td>模块与记忆数量</td></tr>
+    <tr><td><code>pmem terms</code></td><td>记忆里的高频词，用于整理同义词</td></tr>
+    <tr><td><code>pmem compact</code></td><td>列出零碎记忆较多的议题；指定议题时输出全部正文供合并；<code>--undo &lt;id&gt;</code> 撤销一次合并（合并产物归档并标为已撤销，原记忆重新现行）</td></tr>
+    <tr><td><code>pmem anchors [--apply]</code></td><td>给没有关联代码的旧记忆补 anchors（默认只预览）</td></tr>
+    <tr><td><code>pmem anchors --rename 旧=新 [--apply]</code></td><td>代码改名、搬家后批量改写记忆的关联代码</td></tr>
+    <tr><td><code>pmem migrate move &lt;id&gt;... --to &lt;模块&gt; [--apply]</code></td><td>把归错模块的记忆搬到正确的模块</td></tr>
+    <tr><td><code>pmem format [--apply]</code></td><td>把旧记忆里一整行的长正文按句号、分号和编号断行，编号小项缩进两格，方便直接打开文件阅读（默认只预览；新写入和导入的记忆会自动整理）</td></tr>
+    <tr><td><code>pmem import</code></td><td>从 LanceDB 记忆库只读导入</td></tr>
+    <tr><td><code>pmem reindex</code></td><td>清空本机索引缓存并重建</td></tr>
+    <tr><td><code>pmem report</code></td><td>本机收益报告；开了 <code>harness.mode</code> 时另有漏改提示采纳率、验证回合比例、同文件 3 天返工率</td></tr>
+    <tr><td><code>pmem bench</code></td><td>有 / 无记忆对照实验</td></tr>
+    <tr><td><code>pmem serve</code> / <code>pmem hook</code></td><td>由工具自动调用，不需要手动运行</td></tr>
+  </table>
+  <pre><code>pmem search --path Assets/Game/Jigsaw/JigsawReward.cs
+pmem search --module Puzzle "重复发放"                       <span class="c"># 别名、同义词自动扩展</span>
+pmem search --module Puzzle "重复发放" --as-of 2026-06-01    <span class="c"># 按当时的视角查</span>
+pmem record --module gameplay.Jigsaw --entity Reward --kind exclusion --content-file note.txt --alias 重复领取 多领 --brief
+pmem graph --module gameplay.Jigsaw --entity Reward</code></pre>
+</section>
+
+<!-- ============ 配置 ============ -->
+<section id="config">
+  <h2>配置</h2>
+  <p><code>.memory/config.yaml</code> 随仓库提交，团队共用。<code>pmem init</code> 生成的规则文件不要手改，重新 init 会覆盖；需要调整就改这里。</p>
+  <pre><code>schema_version: 1
+project:
+  name: MyGame
+  type: game
+vcs: auto                   <span class="c"># auto / git / svn / none</span>
+svn_auto_add: true          <span class="c"># SVN 下新写的记忆文件自动 svn add</span>
+gate:
+  mode: block               <span class="c"># block 检索成功返回才放行 / warn 只提醒一次 / off 只靠规则</span>
+  watch: []                 <span class="c"># 为空 = 所有已登记模块的路径都受守护</span>
+  ignore: ["**/*.md", "docs/**", ".memory/**", ".cursor/**", ".claude/**", ".codex/**", ".agents/**"]
+  skip_markers: ["跳过记忆", "skip-memory"]       <span class="c"># 用户这样说时本对话不查也不写（须是独立短语）</span>
+  resume_markers: ["恢复记忆", "resume-memory"]   <span class="c"># 误判或改主意时，说这个重新打开</span>
+  stop_reminder: true       <span class="c"># 改了模块却没写记忆时，结束提醒一次</span>
+  analysis_reminder: false  <span class="c"># 默认关。改 true 后：排查/纯查阅查过却没落结论时，结束提醒一次</span>
+  analysis_markers: [...]   <span class="c"># 判断“排查类提问”的用语（为什么、报错、根因……），默认值见 core/config.py</span>
+  read_digest: true         <span class="c"># 读代码时附上该模块的记忆摘要</span>
+  question_review: true     <span class="c"># 问题提到的模块没查过时，结束时要求核对</span>
+  record_exempt: [...]      <span class="c"># 只改了这些文件的模块不提醒写功能记录；默认是测试、生成代码、json/yaml/toml 等配置，写了就整个替换默认值</span>
+wiki:
+  auto: true                <span class="c"># 写入或确认记忆后自动重新生成 Wiki</span>
+  dir: .memory/wiki         <span class="c"># 必须在项目内。指到项目外时 pmem wiki / pmem map 拒绝；自动生成只警告。首次生成自带 .gitignore</span>
+spec:
+  dir: .memory/specs        <span class="c"># 必须在项目内。每个模块一份当前规格，进版本库；指到项目外时 pmem spec 拒绝</span>
+  reminder: false           <span class="c"># 默认不提示。改成 true 后，改了模块却没更新规格时，回合结束提醒一次</span>
+write:
+  default_status: active    <span class="c"># active 直接生效 / draft 需人工审阅</span>
+  content_min: 20
+  content_max: 5000
+  recommend_max: 600        <span class="c"># 超过只提示、不拒绝</span>
+  max_per_day_per_entity: 5 <span class="c"># 同一议题每天最多几条；替代仍现行的旧记忆、覆盖草稿不计</span>
+  secret_patterns: []       <span class="c"># 额外的敏感信息正则，正文、议题名、别名命中就拒绝写入</span>
+search:
+  limit: 5                  <span class="c"># 默认返回几条教训</span>
+  feature_limit: 3          <span class="c"># 另外最多列几条功能记录和规划的标题；0 不列</span>
+  max_per_batch: 2          <span class="c"># 同一批写入的记忆前几条按原位置排，超出的往后排</span>
+  recency_half_life_days: 90  <span class="c"># 时效加分的半衰期</span>
+embedding:
+  backend: auto             <span class="c"># auto / onnx / ollama / openai / none</span>
+  model: ""                 <span class="c"># 为空用默认：onnx 为 BAAI/bge-small-zh-v1.5，ollama 为 bge-m3；openai 必填</span>
+  model_path: ""            <span class="c"># onnx 用本地模型目录（离线环境）</span>
+  base_url: ""              <span class="c"># 只接受本机（localhost、127.0.0.1、::1）和 https://api.openai.com。其他地址须在本机设置 PMEM_EMBED_ALLOW_REMOTE=1，且必须是 https。OPENAI_API_KEY 只发给官方地址，其余只用 PMEM_OPENAI_API_KEY。ollama 留空即 http://localhost:11434</span>
+server:
+  watchdog: true            <span class="c"># MCP 服务崩溃、卡死或 pmem 升级后自动重启</span>
+  request_timeout: 120      <span class="c"># 单次调用超过这么多秒没响应就判定卡死并重启</span>
+sync:
+  auto: apply               <span class="c"># 发现没登记的代码目录：apply 自动追加到 modules.yaml / remind 只提醒 / "off" 关闭</span>
+harness:
+  mode: off                 <span class="c"># 实验：off 关闭 / hint 检索附 context / check 再加上 Stop 漏改与验证检查</span>
+  window_days: 180          <span class="c"># 统计近多少天的提交</span>
+  min_pair: 3               <span class="c"># 至少一起提交几次才算常一起改</span>
+  min_ratio: 0.3            <span class="c"># 在含该文件的提交里至少占多少比例</span>
+  max_files: 3              <span class="c"># 每次最多列几个伙伴 / 修复 / 规格必须保持</span>
+  refresh_hours: 24         <span class="c"># 缓存超过多久后台重算</span>
+  verify_commands: []       <span class="c"># check 档：本轮改了代码却没跑过这些命令时，结束提醒一行</span>
+health:
+  rule_min: 3               <span class="c"># 同议题现行防错类达到几条时，health 提示可写成规则</span>
+  rule_searches: 5          <span class="c"># 反复更正的议题至少被检索几次才提示规则化</span></code></pre>
+  <p class="muted">另有 <code>sync.interval_minutes</code> / <code>sync.full_hours</code>：会话开始扫描间隔与完整热度扫描间隔。</p>
+  <p><code>modules.yaml</code> 改了随时生效；<code>config.yaml</code> 改了之后 Hook、命令行和已在运行的 MCP 服务都在下一次调用时生效；只有 <code>server</code> 下的两项（看门狗开关和超时）要在 Cursor 里重启 pmem 服务（或重开窗口）才会读到。</p>
+</section>
+
+<!-- ============ 存储 ============ -->
+<section id="storage">
+  <h2>存储与资源开销</h2>
+  <pre><code>&lt;仓库&gt;/.memory/                      <span class="c"># 提交到版本库</span>
+  config.yaml
+  modules.yaml
+  entries/&lt;category.Module&gt;/&lt;ULID&gt;.md  <span class="c"># 一条记忆一个文件，通常 1～3 KB</span>
+
+%LOCALAPPDATA%\pmem\                 <span class="c"># 本机缓存，可用环境变量 PMEM_CACHE_DIR 修改</span>
+  models/                            <span class="c"># 语义模型，所有项目共享</span>
+  &lt;项目名&gt;-&lt;路径哈希&gt;/
+    vectors.db                       <span class="c"># 向量缓存（SQLite），用到语义检索才创建，删掉可重建</span>
+    sessions/&lt;对话&gt;.json             <span class="c"># 闸门状态，7 天过期</span>
+    events.jsonl  cites.json         <span class="c"># 收益统计，超过 20 MB 轮转；events.lock 是并发写入时的锁</span>
+    hooks.log  hook-errors.log</code></pre>
+
+  <div class="callout ok">
+    <strong>越用越收敛：项目越到后期维护，AI 越准、越快、越省 token。</strong>
+    <ul>
+      <li><strong>刚接入</strong>：记忆还少，大多查不到东西，准确性和耗时与没有记忆时差不多，每个对话小幅净增约 3000～5000 token。</li>
+      <li><strong>积累期</strong>：常改的模块有了根因、排除项和风险，同样的错开始不再犯，排查变短，少走的弯路开始抵消开销。</li>
+      <li><strong>维护期</strong>：老问题复发、改历史逻辑、换人接手时，直接拿到根因和结论；一条几百 token 的结论顶掉一次重新读代码、重新排查、重试已排除方向。</li>
+    </ul>
+    原因：单次开销不随记忆总数增长（见下）；踩过的坑、排除过的方向、更正都留了下来；零碎记忆还能合并（实测 13 条约 2500 字合并为 2 条约 1150 字）。<br>
+    前提：记忆要准（pmem 自动标“需核实”并要求 AI 核对更正），不能太零碎（<code>pmem doctor</code> 提示时让 AI 按 pmem-compact 合并）。收敛有下限，最终趋向真正的新工作量；全新功能、还没有记忆的模块享受不到。<br>
+    阶段趋势按机制推断，佐证是上一代系统的前后对比，pmem 自己的分阶段数据还没测；可定期用 <code>pmem report</code> 看本项目“用到记忆 / 未用到”两组对话的对比。
+  </div>
+  <div class="callout ok">
+    <strong>记忆变多不会让 token 线性增长。</strong>AI 不会直接读 <code>.md</code> 文件，只拿到检索返回的 Top-K：默认 5 条、上限 10 条，同一批次超过 2 条的往后排，被替代的不返回。单次调用的 token 只和返回条数有关，与库里总数无关。
+  </div>
+  <table>
+    <tr><th>什么时候</th><th>额外 token（本仓库实测，GPT-4o 分词）</th><th>额外耗时</th></tr>
+    <tr><td>每个对话：加载规则</td><td>约 850</td><td>无</td></tr>
+    <tr><td>每个模块每个对话一次：检索（默认 5 条教训全文 + 3 条功能记录标题）</td><td>中位约 2400，最多约 3300</td><td>检索约 7 毫秒</td></tr>
+    <tr><td>查子模块时另带的上级教训（只在细分了模块时）</td><td>每条几百，默认最多 2 条</td><td>无</td></tr>
+    <tr><td>读到某模块代码时附摘要（每模块每对话一次）</td><td>约 530</td><td>Hook 约 0.3 秒</td></tr>
+    <tr><td>没查就改被拦下</td><td>约 115</td><td>Hook 约 0.3 秒</td></tr>
+    <tr><td>其他工具调用</td><td>0</td><td>Hook 约 0.2 秒</td></tr>
+  </table>
+  <p>一个涉及 1～2 个模块的修 bug 对话，额外约 3000～5000 token。想再省：关掉 <code>gate.read_digest</code>（读代码摘要）和 <code>gate.question_review</code>（问答审查），或说“跳过记忆”。</p>
+  <ul>
+    <li><strong>内存</strong>：MCP 服务进程会把全部记忆解析后放进内存（正文、分词计数、向量），每条几 KB，1 万条大约几十 MB。</li>
+    <li><strong>速度</strong>：最多每 10 秒增量刷新一次，只重新解析改过的文件；检索是逐条打分，几千到上万条都在毫秒级。</li>
+    <li><strong>增长控制</strong>：每日写入上限、替代后隐藏、<code>pmem-compact</code> 合并、<code>pmem doctor</code> 提示可合并的议题。</li>
+  </ul>
+</section>
+
+<!-- ============ 检索 ============ -->
+<section id="ranking">
+  <h2>检索与排序</h2>
+  <ol>
+    <li>按 <code>modules.yaml</code> 把文件路径或别名映射到模块，在模块内检索。</li>
+    <li>查询词按 <code>synonyms</code> 和记忆的 <code>aliases</code> 扩展，扩展词权重略低于原词。</li>
+    <li>相关度 = 0.6 × 向量相似度 + 0.4 × BM25（关键词匹配算法）。</li>
+    <li>议题匹配加 0.15；按文件检索时，关联代码（anchors）就是这个文件的加 0.3、同目录的加 0.1，模块里最近在改别的方面也不会把它挤掉；排除项、更正加 0.05；再乘时间系数 0.7 + 0.3 × 0.5<sup>天数/90</sup>：越新越靠前，最旧也保留七成（核对过的按核对日期算）。</li>
+    <li>同一批次（同一对话，或同一作者 90 分钟内）只有前 2 条按原位置排，超出的降到其他相关结果之后（仍在不相关的之前），避免碎片挤占名额，又不整条丢掉。</li>
+    <li>议题内没命中时退回整个模块，并标注 <code>fallback: module</code>。</li>
+  </ol>
+  <p>分词：中文按二元组切分、英文按词，camelCase 拆开。默认语义模型 bge-small-zh-v1.5（ONNX 格式，约 90 MB），首次调用才加载。</p>
+  <p class="muted">实测：853 条真实记忆、13 个限定模块查询，前 3 条命中目标 pmem 9/13，原向量库服务 4/13；单次检索 1～14 毫秒。</p>
+</section>
+
+<!-- ============ 整理 ============ -->
+<section id="curation">
+  <h2>整理与维护</h2>
+  <div class="grid2">
+    <div class="card">
+      <h4>合并零碎记忆（pmem-compact）</h4>
+      <p>功能连续迭代几天常会写出十几条零碎记忆。对 Agent 说“按 pmem-compact 技能合并记忆”，它会读出议题全部正文，提炼成一两条现状并替代旧记忆。实测 13 条约 2500 字合并成 2 条约 1150 字。</p>
+    </div>
+    <div class="card">
+      <h4>整理同义词（pmem-normalize）</h4>
+      <p>“闪退”搜不到只写了“崩溃”的记忆时使用。Agent 用 <code>pmem terms</code> 列高频词、起草词组，确认后写入 <code>synonyms</code>。</p>
+    </div>
+    <div class="card">
+      <h4>补关联代码</h4>
+      <p><code>pmem anchors</code> 从正文提到的文件名、类名.成员 自动补 anchors，补上后才能判断是否过期。</p>
+    </div>
+    <div class="card">
+      <h4>重建索引</h4>
+      <p>换了嵌入模型或检索结果异常时运行 <code>pmem reindex</code>，同时会列出无法解析的记忆文件。</p>
+    </div>
+    <div class="card">
+      <h4>种子记忆（pmem-seed）</h4>
+      <p>解决刚接入时记忆库为空的问题。Agent 读提交说明、文档和注释，用 <code>pmem record --seed</code> 写入；种子立即可检索并标“种子，待确认”。负责人用 <code>pmem seed</code> 过目后转正或退回。不做自动生成：哪些结论仍成立只有读懂才能判断。</p>
+    </div>
+    <div class="card">
+      <h4>归档</h4>
+      <p>记忆已过时、又没有新结论可替代时用 <code>pmem archive &lt;id&gt;</code>。归档的记忆不再被检索到，它替代过的旧记忆也不会因此重新出现；文件保留在版本库可追溯。</p>
+    </div>
+    <div class="card">
+      <h4>模块改名与合并（pmem migrate）</h4>
+      <p><code>rename A B</code>：旧名登记为别名，读写自动转到新名。<code>merge A B</code>：A 的路径、别名、议题并入 B，A 标为 <code>merged_into</code>；A 是冷候选时登记为 B 的别名；A 是写入时自动新建的未登记模块（多半是笔误）时只搬记忆、不登记别名，确实是以后还会用的叫法才加 <code>--alias</code>。搬到一半失败时，按提示运行列出的 <code>pmem migrate move</code> / <code>tidy</code> 命令补完，不要重跑这次迁移。两者都会把记忆文件搬到新模块下（索引按文件里的模块名过滤，不搬就查不到）。队友迁移前写到旧名下的记忆，拉取后运行 <code>pmem migrate tidy --apply</code>。重写 <code>modules.yaml</code> 只保留文件开头的注释，预览时会提示丢失几行。<code>deprecate A</code>：业务下线时用，A 标为 <code>status: deprecated</code>，旧记忆照常可查，新写入被拒绝，改完 A 的代码也不再提醒写记忆；A 的路径仍归它，改代码前照样要先查。</p>
+      <p><code>split A --to B=路径</code>：拆分。路径必须真的分走 A 的代码文件，不能抢别的模块的文件；A 里原样写着的路径直接移给 B。记忆按关联代码在新目录里的归属分配：都落在 B 就搬到 B，落在 A 或别的模块就留在 A；横跨 A 和 B 的、没写关联代码且同议题去向不一致的留在 A 并列出来，用 <code>--assign</code> 指定。<code>--by entity</code> 时把这些议题从 A 移到 B，对应记忆跟着走。</p>
+    </div>
+    <div class="card">
+      <h4>目录同步（pmem sync）</h4>
+      <p>项目里新增了目录时运行。没被任何模块覆盖的代码按“第一个完全没有已覆盖文件的上级目录”分组：和已有模块同名、或是已有模块的又一个变体目录（同一父目录下它已有两个以上路径）的追加到那个模块；3 个文件以上且近 180 天有改动的成为新模块，否则成为冷候选；第三方目录追加到 <code>third_party</code>。冷候选有了记忆或改动 5 次以上时转正。近 90 天没改动也没记忆的模块只提示，不自动降级。</p>
+      <p><b>自动同步</b>（<code>sync.auto</code>，默认 <code>apply</code>）：不用记得手动跑。Agent 改到没归属任何模块的代码文件时立即、每次会话开始时（距上次超过 <code>interval_minutes</code>）由 Hook 拉起后台进程 <code>pmem sync --auto</code>，不阻塞对话。后台先比目录指纹，目录没变就直接结束；平时不读提交历史（SVN 要走网络），只按文件数分新模块和冷候选，每 <code>full_hours</code> 做一次带热度的完整扫描。<code>apply</code> 按 <code>--apply</code> 的规则只追加；<code>modules.yaml</code> 正文里有注释（重写会丢）时退回只提醒。结果在下一次工具调用后告诉 Agent，由它转告你这次新增了几个模块、几个冷候选（写明数量），名字不合适用 <code>pmem migrate rename</code> 改；<code>pmem sync --history</code> 列出本机最近 20 次自动登记各新增了多少。扫完仍没归属的目录（散落文件、只提醒没登记的）再改时不重复扫描。自动登记只追加：手工删掉某个模块，下次扫描会把它加回来，不想登记的目录写进 <code>ignored</code>。实测 4681 个代码文件的 SVN 项目：目录没变约 1.2 秒，有变化约 3.5 秒，全在后台。</p>
+    </div>
+    <div class="card">
+      <h4>健康报告（pmem health）</h4>
+      <p>给模块负责人定期收口用，只列有问题的段落并附处理办法；按 pmem-consolidate 技能可以让 Agent 逐节处理。检索、拒绝等数据只来自本机事件日志；“没人检索的模块”在本机检索少于 20 次时不统计。</p>
+      <p>“疑似互相矛盾的记忆”：同模块同议题、都还现行、一条是结论或决定而另一条是排除项或更正、正文用词高度相似（不比较风险类）。确实冲突就写更正替代过时的那条；两条都成立就 <code>pmem confirm</code> 较早那条，之后不再提示。</p>
+      <p>“未登记模块”：写入时用了 <code>modules.yaml</code> 里没有的模块名会自动新建。报告按这些记忆的关联代码给出建议登记的 paths（同一目录有 2 个以上文件的登记整个目录），并说明这些代码现在归哪个模块：都归同一个已登记模块的多半是写错了名字，用 <code>pmem migrate merge</code> 并过去；冷候选模块已有记忆的用 <code>pmem sync --apply</code> 转正。</p>
+      <p>“召回偏低”：现行教训 10 条以上、本机按模块检索 10 次以上，但被返回过的教训不到 30% 的模块（本机检索少于 20 次时不统计）。列出从没返回过的议题；常问却查不到的补 aliases 或登记同义词，议题太杂的用 <code>pmem migrate split &lt;模块&gt; --by entity --to &lt;新模块&gt;=&lt;议题&gt;</code> 拆开。功能记录在检索里只给标题，不参与这项统计。</p>
+      <p>“改了代码却没写功能记录”：按结束时需要记录的模块统计，回复“无需记录”的也列出，由负责人判断是否真的不用记。</p>
+      <p>清理候选只建议归档、从不删除，每条附判断依据（✓ 满足、✗ 不满足）。“建议归档”要同时满足：关联代码全部不存在（没写关联代码的看正文提到的文件和类，找到的不到 20%）、同议题没有其他现行记忆、没被其他记忆引用、统计期内本机没被用过（本机检索太少时不看这一条）。只满足一部分的列为“待核对”；排除项、风险、更正、全项目级和种子记忆最多到“待核对”。关联代码还有一处在的记忆不会成为候选。</p>
+    </div>
+    <div class="card">
+      <h4>记忆图（pmem map）</h4>
+      <p>按模块分区、议题排时间线。红色是失败或纠错（排除项、更正），绿色是落地（结论、决定、功能），黄色是注意（风险），蓝色是未实现（规划），灰色虚框是已被替代或归档。实线是记忆里写明的替代，虚线是推断（同议题里排除项之后第一条落地的记忆，没写替代关系），“已撤销”是撤销过的合并。</p>
+      <p>顶部总评衡量存储结构是否完整：功能记录覆盖率、漏记（近期有提交、同期没有功能记录的模块）、断链（更正没写替代哪条，或同议题一正一反却没有替代关系）、悬而未决（只有排除项、后面没有落地）、过期。它不衡量记忆对 AI 有没有用，那要看 <code>pmem report</code> 和 <code>pmem bench</code>。Wiki 每个模块页也附一张 Mermaid 演化图（最多 40 个节点）。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 收益 ============ -->
+<section id="metrics">
+  <h2>衡量收益</h2>
+  <h3>日常数据：pmem report</h3>
+  <pre><code>pmem report --days 30     <span class="c"># 加 --json 导出原始数字</span></code></pre>
+  <table>
+    <tr><th>指标</th><th>含义</th></tr>
+    <tr><td>检索命中率</td><td>改代码前查记忆，有多少次查到了相关结论</td></tr>
+    <tr><td>避坑提示</td><td>命中结果里有多少次是排除项、风险或更正</td></tr>
+    <tr><td>跨人复用</td><td>有多少次用上了同事写的记忆</td></tr>
+    <tr><td>功能记录覆盖</td><td>改过代码、需要记录的模块里，同一对话写了功能记录的比例（目标不低于 80%），偏低说明用户要求的行为没留下记录</td></tr>
+    <tr><td>防错类占比</td><td>本期新写教训里排除项、风险、更正的占比（功能记录不算，目标不低于 30%），偏低说明教训在变成变更记录</td></tr>
+    <tr><td>对话内重复</td><td>同一对话里给过全文又整条再给的条数，以及已折叠成标题的条数</td></tr>
+    <tr><td>记忆被采用</td><td>返回的记忆有多少条在 Agent 回复里被明确用到（字面重合，够长标题与正文取较大覆盖率；保守下限）</td></tr>
+    <tr><td>闸门 / 提醒转化</td><td>被提醒后有多少次真的照做了</td></tr>
+    <tr><td>漏改提示采纳</td><td>harness：提示过的伙伴文件，同对话随后改了的比例</td></tr>
+    <tr><td>验证回合</td><td>harness check：改了代码且配置了验证命令的回合里，跑过验证的比例</td></tr>
+    <tr><td>返工率</td><td>harness：统计期内改过的文件，3 天内又被改的比例</td></tr>
+    <tr><td>知识资产</td><td>有记忆的模块占比、单作者模块、改动多却没记忆的模块</td></tr>
+  </table>
+  <p class="muted">数据只存在本机，不会上传；团队汇总尚未实现。</p>
+
+  <h3>对照实验：pmem bench</h3>
+  <p>从项目历史里挑出“当时知道某条结论就能少走弯路”的问题写成用例（参考 <code>bench/cases.yaml</code>），同一任务有记忆、无记忆各跑一遍，比较通过率、token、耗时、工具调用次数。需要 Cursor SDK 和 <code>CURSOR_API_KEY</code>，会真实消耗额度。</p>
+  <pre><code>pmem bench --dry-run      <span class="c"># 先确认用例有效：起始提交上验收应当失败</span>
+pmem bench                <span class="c"># 结果写入 bench-results/summary.md</span></code></pre>
+</section>
+
+<!-- ============ 迁移 ============ -->
+<section id="import">
+  <h2>迁移旧记忆</h2>
+  <p>已有 LanceDB 版记忆库（如 tilematch-dev-memory）可以只读导入，源库不会被修改，重复执行会跳过已导入的条目：</p>
+  <pre><code>uv tool install "pmem[embed,import] @ git+https://github.com/mry-ship/pmem"   <span class="c"># 或在源码目录 uv tool install --editable ".[embed,import]"</span>
+pmem import --lancedb &lt;源库目录&gt; --catalog &lt;源 modules.yaml&gt; --author &lt;团队名&gt; --dry-run   <span class="c"># 先预览</span>
+pmem import --lancedb &lt;源库目录&gt; --catalog &lt;源 modules.yaml&gt; --author &lt;团队名&gt; --guess-kind
+pmem anchors --apply      <span class="c"># 给导入的记忆补关联代码</span>
+pmem reindex</code></pre>
+  <ul>
+    <li>导入的类型默认都是 conclusion，<code>--guess-kind</code> 按正文开头猜测排除、风险等类型。</li>
+    <li>含疑似密钥的条目会被跳过并列出。</li>
+    <li><code>--catalog</code> 只在 <code>modules.yaml</code> 还没有模块时生效；导入后要给模块补上 <code>paths</code>，闸门才能按文件定位模块。</li>
+  </ul>
+</section>
+
+<!-- ============ FAQ ============ -->
+<section id="faq">
+  <h2>常见问题</h2>
+  <h3>Windows 上 Hook 收到的中文是乱码？</h3>
+  <p>这是 Cursor 在非 UTF-8 代码页下的转码问题，pmem 已自动兼容。开启 Windows 设置里的“使用 Unicode UTF-8 提供全球语言支持”可以从根本上避免。</p>
+  <h3>终端里 pmem 的输出是乱码？</h3>
+  <p>pmem 本身输出 UTF-8，直接看不会乱。Windows PowerShell 5 把输出再接给 <code>Select-String</code>、<code>Select-Object</code> 等命令时会按 GBK 解码，于是乱码。不要接管道，改用 <code>--brief</code> 看精简输出；确实要接时先运行 <code>[Console]::OutputEncoding = [Text.Encoding]::UTF8</code>。</p>
+  <h3>第一次查询很慢？</h3>
+  <p>首次使用会下载语义模型。提前运行一次 <code>pmem doctor</code> 即可预下载。</p>
+  <h3>modules.yaml 写错了？</h3>
+  <p>所有命令都会提示出错的行号；<code>pmem doctor</code> 还会检查覆盖率和路径重叠。</p>
+  <h3>没有相关记忆，为什么还返回了几条？</h3>
+  <p>检索总是返回得分最高的几条，由 Agent 读正文判断是否相关。真实数据上相关和不相关的得分区间重叠，设阈值会把真命中也挡掉，所以没加。把常用叫法写全比阈值更管用。</p>
+  <h3>用 SVN 可以吗？</h3>
+  <p>可以。作者和版本号取自 SVN，新记忆会自动 <code>svn add</code>，终端命令的事后比对也支持。按函数判断“需核实”目前只支持 Git。</p>
+  <h3>对话里出现一条以“[pmem]”开头的消息，要我处理吗？</h3>
+  <p>不用。这是回合结束时 pmem 自动发给 AI 的提醒（比如改了代码还没写记忆），Cursor 把它显示成一条用户消息。AI 会为改过的模块补写功能记录，再看本轮有没有被排除的方向、根因或坑、约束、方案取舍，有就补写教训；确实不用记时回复“无需记录：原因”，不需要你提供原因。</p>
+  <h3>为什么做了功能也要记？不会变成变更日志吗？</h3>
+  <p>功能记录写的是“谁要求的、哪些行为必须保持”，不是“改了哪个方法”。没有它，用户要求的行为看起来就像普通实现，后来的人（包括 AI）可能当成冗余改回去。功能记录在检索里只列标题、单独一组，教训照样优先、给全文，所以不会被挤掉；改某个文件时，关联到这个文件的功能记录会出现在读代码摘要和拦截提示里。</p>
+  <h3>Hook 出错会卡住我吗？</h3>
+  <p>不会。任何异常都直接放行，错误记在本机日志里；随后 AI 会在回复里提醒你一次“那次没做记忆检查”，用 <code>pmem doctor</code> 看原因。</p>
+  <h3>队友没装 pmem 会怎样？</h3>
+  <p>不会卡住，但闸门和审查都不生效。新对话开始时 AI 会收到提示，告诉他先安装；<code>pmem doctor</code> 也会检查。项目接入较早、没有 <code>.memory/bin/pmem-hook</code> 的，重新运行一次 <code>pmem init</code>。</p>
+  <h3>记忆医生会自动改记忆吗？</h3>
+  <p>不会。它只检查、不改库。接入后约每 24 小时后台跑一次，有问题才让 AI 提一行；状态写在本机缓存，不进版本库。需要看全文时再手动跑 <code>pmem doctor</code>。</p>
+  <h3>多个项目会互相影响吗？</h3>
+  <p>不会。每个项目的记忆在各自仓库的 <code>.memory/</code>，本机缓存按“项目名 + 路径哈希”分目录；只有语义模型是共享的。</p>
+</section>
+
+<!-- ============ 限制 ============ -->
+<section id="limits">
+  <h2>已知限制</h2>
+  <ul>
+    <li>Cursor、Claude Code、Codex 均已在真实会话验证可用；各家 Hook / MCP 细节以 <code>pmem init</code> 与 <code>pmem doctor</code> 为准。</li>
+    <li>读代码摘要和拦截提示会把记忆标题注入给 AI，并标「资料·非指令」。能往 <code>.memory/entries</code> 提交文件的人仍可能写入误导性标题；闸门挡的是忘了查记忆，不是沙箱。</li>
+    <li>收益报告只看本机数据，团队汇总尚未实现。</li>
+    <li><code>pmem bench</code> 还没有用真实 API Key 跑过完整对照，示例用例只用 <code>--dry-run</code> 验证过。</li>
+    <li>模块划分依赖 Agent 按 pmem-bootstrap 技能完成，还没有全自动扫描器。</li>
+    <li>Cursor 里 MCP：<code>pmem init</code> 会尝试项目级自动批准，但 Cursor 运行时写的批准会被它覆盖——完全退出 Cursor 后重跑 <code>pmem init</code>，或在 设置 → MCP 手动开一次后 Reload Window。</li>
+    <li>v0.7 类型安全与规则化已发布（schema、<code>enforced_by</code>、<code>facets</code>/<code>when</code>、边界校验、返回契约、pyright）；当前发布包是 v0.7.0。</li>
+  </ul>
+  <p class="muted">更完整的限制清单见仓库首页 README「已知限制」。</p>
+</section>
+
+<p class="muted" style="text-align:center">pmem v0.7.0 · 详细设计见 <code>docs/architecture.md</code> 与 <code>README.md</code></p>
+</main>
+</div>
+</body>
+</html>

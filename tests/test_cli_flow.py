@@ -1,0 +1,424 @@
+import io
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+
+import pytest
+import yaml
+
+from pmem.cli.main import main
+
+
+def test_init_creates_project_files_and_merges_existing_cursor_config(tmp_path, capsys):
+    cursor = tmp_path / ".cursor"
+    cursor.mkdir()
+    (cursor / "hooks.json").write_text(json.dumps({
+        "version": 1, "hooks": {"stop": [{"command": "my-own-hook"}, {"command": "pmem hook stop"}]}
+    }), encoding="utf-8")
+    (cursor / "mcp.json").write_text(json.dumps({"mcpServers": {"other": {"command": "x"}}}), encoding="utf-8")
+    (tmp_path / "Assets").mkdir()
+    (tmp_path / "ProjectSettings").mkdir()
+
+    assert main(["init", "--root", str(tmp_path)]) == 0
+
+    config = yaml.safe_load((tmp_path / ".memory" / "config.yaml").read_text(encoding="utf-8"))
+    assert config["project"]["type"] == "game"
+    modules = yaml.safe_load((tmp_path / ".memory" / "modules.yaml").read_text(encoding="utf-8"))
+    assert "activity" in modules["categories"]
+    hooks = json.loads((cursor / "hooks.json").read_text(encoding="utf-8"))["hooks"]
+    assert "preToolUse" in hooks
+    servers = json.loads((cursor / "mcp.json").read_text(encoding="utf-8"))["mcpServers"]
+    assert set(servers) == {"other", "pmem"}
+    assert servers["pmem"]["command"] == "pmem"
+    assert (cursor / "rules" / "pmem.mdc").exists()
+    assert (cursor / "skills" / "pmem-bootstrap" / "SKILL.md").exists()
+    assert "pmem compact" in (cursor / "skills" / "pmem-compact" / "SKILL.md").read_text(encoding="utf-8")
+    # 默认 full：完整闸门+读码摘要+提醒；Hook 命令为 pmemw
+    assert [h["command"] for h in hooks["stop"]] == ["my-own-hook", "pmemw hook stop"]
+    assert [h["command"] for h in hooks["sessionStart"]] == ["pmemw hook session"]
+    assert "postToolUse" in hooks and "afterFileEdit" in hooks and "preCompact" in hooks
+    assert "Read" in hooks["postToolUse"][-1]["matcher"] and "Shell" in hooks["postToolUse"][-1]["matcher"]
+    assert "Write" in hooks["preToolUse"][-1]["matcher"]
+    assert (tmp_path / ".memory" / "bin" / "pmem-hook").exists()
+    assert b"\r\n" in (tmp_path / ".memory" / "bin" / "pmem-hook.cmd").read_bytes()
+    main(["init", "--root", str(tmp_path)])
+    again = json.loads((cursor / "hooks.json").read_text(encoding="utf-8"))["hooks"]
+    assert len(again["sessionStart"]) == 1 and "afterFileEdit" in again
+    assert "Read" in again["postToolUse"][-1]["matcher"]
+
+
+
+def test_rerun_init_says_which_options_were_not_applied(tmp_path, capsys):
+    main(["init", "--root", str(tmp_path), "--type", "generic"])
+    assert "没有生效" not in capsys.readouterr().out
+    main(["init", "--root", str(tmp_path), "--gate", "warn", "--type", "game"])
+    out = capsys.readouterr().out
+    assert "--gate warn" in out and "--type game" in out
+    config = yaml.safe_load((tmp_path / ".memory" / "config.yaml").read_text(encoding="utf-8"))
+    assert config["gate"]["mode"] == "block" and config["project"]["type"] == "generic"
+
+
+def _run_wrapper(root, event: str, path: str) -> dict:
+    """在 PATH 只含 path 的环境里运行生成的 Hook 包装脚本（Windows 用 .cmd，其他用 sh）。"""
+    script = root / ".memory" / "bin" / ("pmem-hook.cmd" if sys.platform == "win32" else "pmem-hook")
+    command = ["cmd", "/c", str(script), event] if sys.platform == "win32" else ["sh", str(script), event]
+    env = {**os.environ, "PATH": path}
+    if sys.platform == "win32":
+        command[0] = os.path.join(os.environ["SystemRoot"], "System32", "cmd.exe")
+    out = subprocess.run(command, input=b"{}", capture_output=True, env=env, cwd=root, check=True).stdout
+    return json.loads(out.decode("ascii"))
+
+
+def test_hook_wrapper_tells_agent_when_pmem_is_missing(tmp_path):
+    main(["init", "--root", str(tmp_path)])
+    # 只保留系统命令（where、sh 等），没有 pmem
+    empty = os.path.join(os.environ["SystemRoot"], "System32") if sys.platform == "win32" else "/usr/bin:/bin"
+    assert "pmem" in _run_wrapper(tmp_path, "session", empty)["additional_context"]
+    assert _run_wrapper(tmp_path, "pre-tool", empty) == {"permission": "allow"}
+    assert _run_wrapper(tmp_path, "stop", empty) == {}
+
+
+def test_hook_wrapper_hands_over_to_installed_pmem(tmp_path):
+    main(["init", "--root", str(tmp_path)])
+    pmem = shutil.which("pmem")
+    if pmem is None:
+        pytest.skip("需要已安装的 pmem")
+    assert _run_wrapper(tmp_path, "session", os.path.dirname(pmem) + os.pathsep + os.environ["PATH"]) == {}
+
+
+def test_init_wires_claude_and_codex_without_touching_their_other_settings(tmp_path, capsys):
+    (tmp_path / "CLAUDE.md").write_text("# 项目说明\n团队约定 A\n", encoding="utf-8")
+    claude = tmp_path / ".claude"
+    claude.mkdir()
+    (claude / "settings.json").write_text(json.dumps({
+        "permissions": {"allow": ["Bash(ls)"]},
+        "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "notify.sh"},
+                                      {"type": "command", "command": "pmem hook stop --agent claude"}]}]},
+    }), encoding="utf-8")
+    codex = tmp_path / ".codex"
+    codex.mkdir()
+    (codex / "config.toml").write_text('model = "gpt-5"\n', encoding="utf-8")
+
+    for _ in range(2):
+        assert main(["init", "--root", str(tmp_path), "--agents", "auto"]) == 0
+
+    claude_md = (tmp_path / "CLAUDE.md").read_text(encoding="utf-8")
+    assert claude_md.startswith("# 项目说明\n团队约定 A\n") and claude_md.count("<!-- pmem:begin -->") == 1
+    assert "confirm_memory" in claude_md
+    settings = json.loads((claude / "settings.json").read_text(encoding="utf-8"))
+    assert settings["permissions"] == {"allow": ["Bash(ls)"]}
+    stop = [h["command"] for g in settings["hooks"].get("Stop", []) for h in g["hooks"]]
+    if sys.platform == "win32":
+        # 与 Cursor 同开：清空 Claude 侧 pmem Hook，只留别人的 notify.sh（防弹窗）
+        assert stop == ["notify.sh"]
+        assert "PreToolUse" not in settings["hooks"]
+    else:
+        assert stop == ["notify.sh", "pmemw hook stop --agent claude"]
+        assert settings["hooks"]["PreToolUse"][0]["matcher"].startswith("^(Write|Edit")
+        assert all("PowerShell" in settings["hooks"][e][0]["matcher"] for e in ("PreToolUse", "PostToolUse"))
+        assert all(h["onFailure"] == "continue" for e in ("PreToolUse", "UserPromptSubmit")
+                   for g in settings["hooks"][e] for h in g["hooks"])
+    mcp = json.loads((tmp_path / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]["pmem"]
+    assert mcp["command"] == "pmem" and mcp["args"] == ["serve"]
+    assert (claude / "skills" / "pmem-normalize" / "SKILL.md").exists()
+    consolidate = (claude / "skills" / "pmem-consolidate" / "SKILL.md").read_text(encoding="utf-8")
+    assert consolidate.startswith("---\nname: pmem-consolidate") and "pmem migrate split" in consolidate
+
+    toml = (codex / "config.toml").read_text(encoding="utf-8")
+    assert toml.startswith('model = "gpt-5"\n') and toml.count("[mcp_servers.pmem]") == 1
+    assert 'command = "pmem"' in toml
+    codex_hooks = json.loads((codex / "hooks.json").read_text(encoding="utf-8"))["hooks"]
+    assert [h["command"] for g in codex_hooks["PreToolUse"] for h in g["hooks"]] == ["pmemw hook pre-tool --agent codex"]
+    assert "onFailure" not in codex_hooks["PreToolUse"][0]["hooks"][0]
+    assert "PreCompact" in codex_hooks and "Stop" in codex_hooks
+    assert (tmp_path / ".agents" / "skills" / "pmem-consolidate" / "SKILL.md").exists()
+    assert (tmp_path / "AGENTS.md").read_text(encoding="utf-8").count("<!-- pmem:end -->") == 1
+    out = capsys.readouterr().out
+    assert "Claude Code" in out and "/hooks" in out
+    assert "Hooks=full" in out
+
+
+def test_init_only_wires_cursor_when_no_other_agent_is_present(tmp_path):
+    main(["init", "--root", str(tmp_path)])
+    assert not (tmp_path / "CLAUDE.md").exists() and not (tmp_path / ".codex").exists()
+    main(["init", "--root", str(tmp_path), "--agents", "codex"])
+    assert (tmp_path / ".codex" / "hooks.json").exists() and not (tmp_path / ".claude").exists()
+
+
+class _Answer:
+    def __init__(self, text: str):
+        self.text = text
+
+    def isatty(self) -> bool:
+        return True
+
+    def readline(self) -> str:
+        return self.text
+
+
+def test_init_enables_spec_reminder_only_when_the_user_says_yes(tmp_path, capsys):
+    from pmem.cli.init_cmd import run_init
+
+    opened = tmp_path / "opened"
+    assert run_init(opened, "generic", stdin=_Answer("y\n")) == 0
+    opened_config = yaml.safe_load((opened / ".memory" / "config.yaml").read_text(encoding="utf-8"))
+    assert opened_config["spec"]["reminder"] is True
+    assert "规格提醒已开启" in capsys.readouterr().out
+
+    declined = tmp_path / "declined"
+    assert run_init(declined, "generic", stdin=_Answer("\n")) == 0
+    declined_config = yaml.safe_load((declined / ".memory" / "config.yaml").read_text(encoding="utf-8"))
+    assert declined_config["spec"]["reminder"] is False
+    assert "保持关闭" in capsys.readouterr().out
+
+
+def test_init_leaves_spec_reminder_off_without_a_terminal(tmp_path, capsys):
+    assert main(["init", "--root", str(tmp_path), "--type", "generic"]) == 0
+    config = yaml.safe_load((tmp_path / ".memory" / "config.yaml").read_text(encoding="utf-8"))
+    assert config["spec"]["reminder"] is False
+    out = capsys.readouterr().out
+    assert "默认不提示" in out
+    main(["init", "--root", str(tmp_path)])
+    assert "默认不提示" not in capsys.readouterr().out
+
+
+def test_init_keeps_existing_memory_config(tmp_path):
+    (tmp_path / ".memory").mkdir()
+    (tmp_path / ".memory" / "config.yaml").write_text("gate: { mode: block }\n", encoding="utf-8")
+    main(["init", "--root", str(tmp_path)])
+    assert "block" in (tmp_path / ".memory" / "config.yaml").read_text(encoding="utf-8")
+
+
+def test_scan_lists_directories_and_third_party(tmp_path, capsys):
+    for rel in ["Assets/Game/Jigsaw/A.cs", "Assets/Game/Jigsaw/B.cs", "Assets/Game/Jigsaw/C.cs",
+                "Assets/Plugins/Sdk/X.cs", "README.md"]:
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x", encoding="utf-8")
+    main(["scan", "--root", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert "Assets/Plugins" in out
+    assert "[Assets/Game/Jigsaw]" in out
+
+
+def test_bad_input_gets_one_line_error_instead_of_traceback(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("PMEM_CACHE_DIR", str(tmp_path / "cache"))
+    assert main(["scan", "--root", str(tmp_path / "missing")]) == 2
+    with pytest.raises(SystemExit, match="没有给出 Agent"):
+        main(["init", "--root", str(tmp_path), "--agents", ","])
+    main(["init", "--root", str(tmp_path), "--type", "generic"])
+    config = tmp_path / ".memory" / "config.yaml"
+    config.write_text(config.read_text(encoding="utf-8").replace("mode: block", "mode: bogus"), encoding="utf-8")
+    capsys.readouterr()
+    assert main(["doctor", "--root", str(tmp_path)]) == 1
+    assert "配置读不出" in capsys.readouterr().out
+    assert main(["sync", "--root", str(tmp_path)]) == 2
+    assert "gate.mode" in capsys.readouterr().err
+
+
+def test_doctor_reports_coverage(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("PMEM_CACHE_DIR", str(tmp_path / "cache"))
+    main(["init", "--root", str(tmp_path), "--type", "generic"])
+    config = tmp_path / ".memory" / "config.yaml"
+    config.write_text(config.read_text(encoding="utf-8").replace("backend: auto", "backend: none"), encoding="utf-8")
+    src = tmp_path / "src" / "Login"
+    src.mkdir(parents=True)
+    (src / "Login.ts").write_text("x", encoding="utf-8")
+    modules = tmp_path / ".memory" / "modules.yaml"
+    modules.write_text(modules.read_text(encoding="utf-8").replace(
+        "modules: {}", "modules:\n  feature.Login:\n    paths: [src/Login/**]\n  feature.Ghost:\n    paths: [src/Ghost/**]"
+    ), encoding="utf-8")
+    capsys.readouterr()
+    main(["doctor", "--root", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert "模块覆盖率 100.0%" in out
+    assert "feature.Ghost" in out
+    assert "Hooks 是旧版" not in out
+    assert "Hooks=full" in out
+    hooks = tmp_path / ".cursor" / "hooks.json"
+    data = json.loads(hooks.read_text(encoding="utf-8"))
+    # 故意写成只有 Read、缺 Grep 的旧版 matcher
+    data["hooks"]["postToolUse"] = [{
+        "command": "pmemw hook post-tool",
+        "matcher": "Read",
+    }]
+    hooks.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    doctor_out = (main(["doctor", "--root", str(tmp_path)]), capsys.readouterr().out)[1]
+    assert "Hooks 是旧版" in doctor_out
+
+
+def test_doctor_checks_claude_and_codex_without_requiring_cursor(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("PMEM_CACHE_DIR", str(tmp_path / "cache"))
+    main(["init", "--root", str(tmp_path), "--type", "generic", "--agents", "claude,codex"])
+    config = tmp_path / ".memory" / "config.yaml"
+    config.write_text(config.read_text(encoding="utf-8").replace("backend: auto", "backend: none"), encoding="utf-8")
+    capsys.readouterr()
+    main(["doctor", "--root", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert ".cursor/mcp.json" not in out
+    assert "Claude Code 已接入（Hooks、MCP 与技能）" in out and "Codex 已接入（Hooks、MCP 与技能）" in out
+
+    settings = tmp_path / ".claude" / "settings.json"
+    settings.write_text(settings.read_text(encoding="utf-8").replace("|PowerShell", ""), encoding="utf-8")
+    main(["doctor", "--root", str(tmp_path)])
+    assert "Claude Code 的 Hooks 是旧版" in capsys.readouterr().out
+    shutil.rmtree(tmp_path / ".agents")
+    main(["doctor", "--root", str(tmp_path)])
+    assert "Codex 缺少 pmem 技能（.agents/skills）" in capsys.readouterr().out
+
+
+def test_doctor_flags_uncommitted_and_scattered_entities(git_repo, capsys, monkeypatch):
+    monkeypatch.setenv("PMEM_CACHE_DIR", str(git_repo / ".." / "cache"))
+    main(["init", "--root", str(git_repo), "--type", "generic"])
+    config = git_repo / ".memory" / "config.yaml"
+    config.write_text(config.read_text(encoding="utf-8").replace("backend: auto", "backend: none"), encoding="utf-8")
+    folder = git_repo / ".memory" / "entries" / "feature.Login"
+    folder.mkdir(parents=True)
+    for i, entity in enumerate(["AutoPop", "AutoPopup", "Captcha"]):
+        entry_id = f"01JA7K3M2X9F4Q8W6ZB1C2D{i:03d}"
+        (folder / f"{entry_id}.md").write_text(
+            f"---\nid: {entry_id}\nmodule: feature.Login\nentity: {entity}\nkind: conclusion\n"
+            "author: a\nnote_date: '2026-10-01'\n---\n登录令牌过期后要静默刷新\n", encoding="utf-8")
+    capsys.readouterr()
+    main(["doctor", "--root", str(git_repo)])
+    out = capsys.readouterr().out
+    assert "本机有 3 条记忆未提交" in out
+    assert "现行记忆 3 条（记忆文件共 3 个" in out
+    assert "1 组实体名字相近" in out and "feature.Login：AutoPop / AutoPopup" in out
+
+
+def test_record_takes_several_aliases_and_brief_output(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("PMEM_CACHE_DIR", str(tmp_path / "cache"))
+    main(["init", "--root", str(tmp_path), "--type", "generic"])
+    config = tmp_path / ".memory" / "config.yaml"
+    config.write_text(config.read_text(encoding="utf-8").replace("backend: auto", "backend: none"), encoding="utf-8")
+    capsys.readouterr()
+    code = main(["record", "--root", str(tmp_path), "--module", "feature.Login", "--entity", "Token",
+                 "--kind", "risk", "--content", "登录令牌过期后要静默刷新，否则会被踢回登录页",
+                 "--alias", "掉登录", "被踢", "--anchor", "src/Login.ts", "--brief"])
+    out = capsys.readouterr().out
+    assert code == 0 and out.startswith("已写入 feature.Login / Token：")
+    assert "只写了文件" in out
+    entry = next((tmp_path / ".memory" / "entries" / "feature.Login").glob("*.md")).read_text(encoding="utf-8")
+    assert "- 掉登录\n- 被踢" in entry
+    main(["search", "--root", str(tmp_path), "--module", "feature.Login", "令牌", "--brief"])
+    out = capsys.readouterr().out
+    assert out.startswith("feature.Login：1 条")
+    assert "- 风险｜Token｜" in out and "⚠ 需核实：src/Login.ts 已不存在" in out
+
+
+def test_brief_accepts_both_related_shapes():
+    from pmem.cli.brief import render_brief
+    search = render_brief("search", {"ok": True, "module": "a.B", "items": [], "related": ["c.D（共同路径）"]})
+    graph = render_brief("graph", {"ok": True, "module": "a.B", "topics": [],
+                                   "related": [{"module": "c.D", "via": "共同路径", "entities": []}]})
+    assert search.endswith("相关模块：c.D（共同路径）") and graph.endswith("相关模块：c.D（共同路径）")
+
+
+def test_doctor_shows_only_recent_hook_errors(tmp_path):
+    from pmem.cli.doctor_cmd import _recent_errors
+
+    log = tmp_path / "hook-errors.log"
+    log.write_text("2026-10-14 10:00:00 ERROR stop@cursor\nTraceback\nNameError: old\n"
+                   "2026-10-16 09:00:00 ERROR pre-tool@cursor\nTraceback\nValueError: new\n", encoding="utf-8")
+    now = time.mktime(time.strptime("2026-10-16 12:00:00", "%Y-%m-%d %H:%M:%S"))
+    recent = _recent_errors(log, now)
+    assert len(recent) == 1 and recent[0].endswith("ValueError: new")
+    assert _recent_errors(log, now + 2 * 86400) == []
+
+
+def test_hook_command_reads_bom_stdin_and_writes_ascii(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("PMEM_CACHE_DIR", str(tmp_path / "cache"))
+    main(["init", "--root", str(tmp_path), "--type", "generic", "--gate", "block"])
+    modules = tmp_path / ".memory" / "modules.yaml"
+    modules.write_text(modules.read_text(encoding="utf-8").replace(
+        "modules: {}", "modules:\n  feature.Login:\n    paths: [src/Login/**]"
+    ), encoding="utf-8")
+    entries = tmp_path / ".memory" / "entries" / "feature.Login"
+    entries.mkdir(parents=True)
+    (entries / "01JA7K3M2X9F4Q8W6ZB1C2D3E4.md").write_text(
+        "---\nid: 01JA7K3M2X9F4Q8W6ZB1C2D3E4\nmodule: feature.Login\nentity: Token\nkind: conclusion\n"
+        "author: a\nnote_date: '2026-10-01'\n---\n登录令牌过期后要静默刷新\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    payload = {"conversation_id": "c1", "tool_name": "Write",
+               "tool_input": {"file_path": str(tmp_path / "src/Login/Login.ts"), "content": "中文"}}
+    raw = ("\ufeff" + json.dumps(payload, ensure_ascii=False)).encode("utf-8")
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(raw)))
+    capsys.readouterr()
+    main(["hook", "pre-tool"])
+    out = capsys.readouterr().out
+    assert out.isascii()
+    assert json.loads(out)["permission"] == "deny"
+
+
+def test_record_and_search_from_cli(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("PMEM_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("PMEM_AUTHOR", "alice")
+    main(["init", "--root", str(tmp_path), "--type", "generic"])
+    (tmp_path / ".memory" / "config.yaml").write_text("vcs: none\nembedding: { backend: none }\n", encoding="utf-8")
+    capsys.readouterr()
+    code = main(["record", "--root", str(tmp_path), "--module", "feature.Login", "--entity", "Token",
+                 "--kind", "conclusion", "--content", "登录令牌过期后由拦截器静默刷新，失败才跳登录页。"])
+    assert code == 0
+    written = json.loads(capsys.readouterr().out)
+    main(["search", "令牌刷新", "--root", str(tmp_path)])
+    assert json.loads(capsys.readouterr().out)["items"][0]["id"] == written["id"]
+    main(["record", "--root", str(tmp_path), "--module", "feature.Login", "--entity", "Token", "--kind", "conclusion",
+          "--content", "登录令牌过期后由拦截器静默刷新，原因是避免用户中途被踢回登录页。", "--draft-id", written["id"]])
+    again = json.loads(capsys.readouterr().out)
+    assert again["id"] == written["id"] and again["overwritten"] is True
+
+    base = ["record", "--root", str(tmp_path), "--module", "feature.Login", "--entity", "Token",
+            "--kind", "conclusion", "--content", "登录令牌过期后由拦截器静默刷新，失败才跳登录页。", "--draft-id", written["id"]]
+    entry = tmp_path / ".memory" / "entries" / "feature.Login" / f"{written['id']}.md"
+    main(base + ["--alias", "掉登录"])
+    main(base)
+    assert "- 掉登录" in entry.read_text(encoding="utf-8")
+    main(base + ["--alias"])
+    assert "掉登录" not in entry.read_text(encoding="utf-8")
+
+
+def test_cli_search_uses_configured_limit_unless_given(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("PMEM_CACHE_DIR", str(tmp_path / "cache"))
+    main(["init", "--root", str(tmp_path), "--type", "generic"])
+    (tmp_path / ".memory" / "config.yaml").write_text(
+        "vcs: none\nembedding: { backend: none }\nsearch: { limit: 1 }\n", encoding="utf-8")
+    for entity in ("Token", "Session"):
+        main(["record", "--root", str(tmp_path), "--module", "feature.Login", "--entity", entity,
+              "--kind", "conclusion", "--content", f"登录{entity}过期后由拦截器静默刷新，失败才跳登录页。"])
+    capsys.readouterr()
+    main(["search", "--root", str(tmp_path), "--module", "feature.Login"])
+    assert len(json.loads(capsys.readouterr().out)["items"]) == 1
+    main(["search", "--root", str(tmp_path), "--module", "feature.Login", "--limit", "2"])
+    assert len(json.loads(capsys.readouterr().out)["items"]) == 2
+
+
+def test_reindex_rebuilds_cache_and_reports_bad_files(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("PMEM_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("PMEM_AUTHOR", "alice")
+    main(["init", "--root", str(tmp_path), "--type", "generic"])
+    (tmp_path / ".memory" / "config.yaml").write_text("vcs: none\nembedding: { backend: none }\n", encoding="utf-8")
+    main(["record", "--root", str(tmp_path), "--module", "feature.Login", "--entity", "Token",
+          "--kind", "conclusion", "--content", "登录令牌过期后由拦截器静默刷新，失败才跳登录页。"])
+    from pmem.core.config import Config
+
+    cache = Config.load(tmp_path).cache_dir
+    (cache / "cites.json").write_text("{}", encoding="utf-8")
+    capsys.readouterr()
+    assert main(["reindex", "--root", str(tmp_path)]) == 0
+    assert "记忆 1 条" in capsys.readouterr().out
+    assert not (cache / "cites.json").exists()
+
+    (tmp_path / ".memory" / "entries" / "feature.Login" / "broken.md").write_text("不是记忆", encoding="utf-8")
+    assert main(["reindex", "--root", str(tmp_path)]) == 1
+    assert "broken.md" in capsys.readouterr().out
+
+
+def test_hook_outside_project_allows(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"{}")))
+    main(["hook", "pre-tool"])
+    assert json.loads(capsys.readouterr().out) == {"permission": "allow"}

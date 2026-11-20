@@ -1,0 +1,120 @@
+from __future__ import annotations
+
+import shutil
+import sys
+from pathlib import Path
+
+import yaml
+
+from pmem.generate.integrations import NEXT_STEPS, SETUP, pick_agents, write_text
+from pmem.generate.templates import CATEGORY_PRESETS, CONFIG_TEMPLATE, MODULES_HEADER
+
+
+def guess_type(root: Path) -> str:
+    if (root / "Assets").is_dir() and (root / "ProjectSettings").is_dir():
+        return "game"
+    if any((root / f).exists() for f in ("go.mod", "pom.xml", "build.gradle", "requirements.txt", "pyproject.toml")):
+        return "backend"
+    if (root / "package.json").exists():
+        return "app"
+    return "generic"
+
+
+def choose_spec_reminder(stdin=None) -> bool | None:
+    """首次写入配置时问要不要开规格提醒。
+
+    终端里输入 y 才开启，直接回车保持关闭。
+    没有终端（脚本、测试、Agent）时不询问，返回 None，沿用模板里的关闭。
+    """
+    stream = sys.stdin if stdin is None else stdin
+    if not getattr(stream, "isatty", lambda: False)():
+        return None
+    print("规格提醒默认不提示。改了模块后，要在回合结束提醒更新规格吗？"
+          "输入 y 开启，直接回车保持关闭：", end=" ", flush=True)
+    try:
+        answer = stream.readline()
+    except EOFError:
+        print()
+        return False
+    return answer.strip().lower() in {"y", "yes", "是"}
+
+
+def run_init(root: Path, project_type: str | None, gate: str | None = None, agents: str = "auto",
+             hooks: str = "auto", stdin=None) -> int:
+    root = root.resolve()
+    memory = root / ".memory"
+    config_path = memory / "config.yaml"
+    modules_path = memory / "modules.yaml"
+    # 重复运行不覆盖已有配置；显式给了 --gate / --type 却没生效时要说出来，否则用户以为改成了
+    ignored = []
+    if gate and config_path.exists():
+        ignored.append(f"--gate {gate}：config.yaml 已存在，请直接改其中的 gate.mode")
+    if project_type and config_path.exists() and modules_path.exists():
+        ignored.append(f"--type {project_type}：config.yaml 和 modules.yaml 已存在，请直接改 project.type 与 categories")
+    gate = gate or "block"
+    project_type = project_type or guess_type(root)
+    chosen = pick_agents(root, agents)
+    done: list[str] = []
+    spec_note = ""
+
+    if not config_path.exists():
+        choice = choose_spec_reminder(stdin)
+        text = CONFIG_TEMPLATE.format(name=root.name, type=project_type, gate=gate)
+        if choice is True:
+            text = text.replace("  reminder: false", "  reminder: true", 1)
+            spec_note = "规格提醒已开启。不想要时，把 .memory/config.yaml 里的 spec.reminder 改回 false。"
+        elif choice is False:
+            spec_note = "规格提醒保持关闭。以后要开，把 .memory/config.yaml 里的 spec.reminder 改成 true。"
+        else:
+            spec_note = "规格提醒默认不提示。要开启的话，把 .memory/config.yaml 里的 spec.reminder 改成 true。"
+        write_text(config_path, text)
+        done.append(f"创建 {config_path.relative_to(root)}（项目类型 {project_type}，闸门 {gate}）")
+    if not modules_path.exists():
+        body = {
+            "schema_version": 1,
+            "categories": {k: {"label": v} for k, v in CATEGORY_PRESETS[project_type].items()},
+            "entities": {},
+            "synonyms": [],
+            "modules": {},
+            "candidates": {},
+            "third_party": [],
+            "ignored": [],
+        }
+        text = MODULES_HEADER + yaml.safe_dump(body, allow_unicode=True, sort_keys=False)
+        write_text(modules_path, text)
+        done.append(f"创建 {modules_path.relative_to(root)}（大类：{' / '.join(CATEGORY_PRESETS[project_type])}）")
+    (memory / "entries").mkdir(exist_ok=True)
+    paired_cursor = "cursor" in chosen
+    for agent in chosen:
+        setup = SETUP[agent]
+        if agent == "claude":
+            done.append(setup(root, hooks_mode=hooks, paired_with_cursor=paired_cursor))
+        elif agent in ("cursor", "codex"):
+            done.append(setup(root, hooks_mode=hooks))
+        else:
+            done.append(setup(root))
+
+    print("pmem 接入完成：")
+    for line in done:
+        print(f"  - {line}")
+    if ignored:
+        print("\n以下参数没有生效（重复运行不覆盖已有配置）：")
+        for line in ignored:
+            print(f"  - {line}")
+    if spec_note:
+        print(f"\n{spec_note}")
+    if shutil.which("pmem") is None:
+        print("\n注意：当前 PATH 中找不到 pmem 命令，Agent 将无法启动 MCP 与 Hooks。请先运行：uv tool install pmem")
+    from pmem.cli.spec_cmd import ensure_spec_skeletons
+
+    _code, message = ensure_spec_skeletons(root)
+    print(f"\n{message}")
+    print("\n下一步：")
+    for i, agent in enumerate(chosen, 1):
+        print(f"  {i}. {NEXT_STEPS[agent]}")
+    n = len(chosen)
+    print(f"  {n + 1}. 对 Agent 说：“按 pmem-bootstrap 技能划分模块”。")
+    print(f"  {n + 2}. 对 Agent 说：“补全模块规格”。已登记模块会先铺四份骨架；"
+          "正文由 pmem-spec 按代码写全，看不到的策划和美术留空。")
+    print(f"  {n + 3}. 运行 pmem doctor 确认覆盖率，然后把 .memory/ 与上面生成的配置提交到版本库。")
+    return 0

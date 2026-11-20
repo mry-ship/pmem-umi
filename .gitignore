@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+*.egg-info/
+spike/cursor_hooks/captures/
+
+bench-results/
+.memory/wiki/
+.memory/cache/
+.memory/umi/*.sqlite
+.memory/umi/*.sqlite-*
+.memory/umi/recovery.json
+*.canvas.tsx

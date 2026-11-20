@@ -1,0 +1,540 @@
+"""pmem health：记忆库健康报告，供模块负责人定期收口（未登记模块、重复模块、检索落空、过时记忆等）。"""
+from __future__ import annotations
+
+import difflib
+import json
+import time
+from collections import Counter, defaultdict
+from datetime import datetime
+from pathlib import Path
+
+from pmem.catalog.coverage import coverage_report
+from pmem.catalog.migrate import MigrateError, stray_moves
+from pmem.core.entry import KIND_LABELS, PITFALL_KINDS, RECORD_KINDS
+from pmem.core.ids import ulid_ms
+from pmem.core.quality import similar_entity_pairs
+from pmem.core.registry import MAX_MODULE_DEPTH, RegistryError, is_descendant, is_lineage, parent_module
+from pmem.index.tokenize import tokenize
+from pmem.metrics.audit import promotion_hints, recall_audit, render_recall, render_unregistered
+from pmem.metrics.cleanup import cleanup_candidates
+from pmem.metrics.events import MIN_SEARCHES_FOR_IDLE, read_events
+from pmem.metrics.report import (
+    MIN_RETURNS_TO_REVIEW,
+    _conversations,
+    _feature_coverage,
+    _link_cli_searches,
+)
+from pmem.service import COMPACT_MIN_GROUP, MemoryService
+
+TOP = 10
+NEGATIVE_KINDS = ("exclusion", "correction")
+# 词集合的 Jaccard 相似度；长正文天然偏低，实测同议题无关的一正一反记忆在 0.11 以下
+CONTRADICTION_OVERLAP = 0.15
+REPEAT_CORRECTIONS = 2
+SEARCH_EVENTS = ("search", "mcp_search", "search_call")
+REJECT_CODES = {
+    "content_length": "字数不在允许范围",
+    "secret": "疑似敏感信息",
+    "daily_cap": "当天同议题条数达到上限",
+    "draft_forbidden": "草稿覆盖不被允许",
+    "module_deprecated": "模块已废弃（只读）",
+    "category_unknown": "大类不存在",
+    "module_invalid": "模块名有误",
+    "modules_yaml": "modules.yaml 有误",
+    "entity_missing": "缺少议题",
+    "kind_invalid": "类型不对",
+    "status_invalid": "状态不对",
+    "scope_invalid": "适用范围不对",
+    "when_invalid": "结构化适用条件不对",
+    "supersede_cycle": "替代关系成环",
+    "supersede_cross_module": "替代了别的模块的记忆",
+    "entity_invalid": "议题名不对（多行或过长）",
+}
+# 没有错误码的旧事件按提示文字归类，按顺序匹配；“上限”的提示里也提到 draft_id，所以排在前面
+REJECT_REASONS = (
+    ("正文长度", "字数不在允许范围"),
+    ("敏感信息", "疑似敏感信息"),
+    ("上限", "当天同议题条数达到上限"),
+    ("draft_id", "草稿覆盖不被允许"),
+    ("不能覆盖", "草稿覆盖不被允许"),
+    ("不能改到", "草稿覆盖不被允许"),
+    ("已废弃", "模块已废弃（只读）"),
+    ("大类", "大类不存在"),
+    ("模块", "模块名有误"),
+    ("entity", "缺少议题"),
+    ("kind", "类型不对"),
+    ("status", "状态不对"),
+)
+
+
+def reject_reason(error: str, code: str | None = None) -> str:
+    if code:
+        return REJECT_CODES.get(code, "其他")
+    return next((label for key, label in REJECT_REASONS if key in error), "其他")
+
+
+def _duplicate_modules(ids: list[str]) -> list[list[str]]:
+    """去掉大类后名字相同（跨大类）或几乎相同的模块组。
+    父子模块、不同分支下同名的末段（AdMob.Android 与 Max.Android）是层级本身，不算重复。"""
+    by_name: dict[str, list[str]] = defaultdict(list)
+    for mid in ids:
+        by_name[mid.split(".", 1)[-1].lower()].append(mid)
+    groups = {tuple(sorted(group)) for group in by_name.values() if len(group) > 1}
+    names = {mids[0].split(".", 1)[-1]: mids for mids in by_name.values()}
+    for a, b in similar_entity_pairs(list(names)):
+        if _hierarchy_pair(a, b):
+            continue
+        groups.add(tuple(sorted({*names[a], *names[b]})))
+    return [list(g) for g in sorted(groups)]
+
+
+def _hierarchy_pair(a: str, b: str) -> bool:
+    """去掉大类后的两个名字是直系，或是不同父模块下的子模块。"""
+    if is_lineage(a, b):
+        return True
+    pa, pb = a.rpartition(".")[0], b.rpartition(".")[0]
+    return bool(pa and pb and pa.lower() != pb.lower())
+
+
+def _hierarchy_issues(registry, visible: list) -> list[str]:
+    """父子模块的结构问题：缺父模块、超过段数、旧版 parent 字段、related 指错、只有一个下级的空父模块、兄弟模块重复的教训。"""
+    rows = []
+    active = {mid: m for mid, m in registry.modules.items() if not m.merged_into}
+    lowered = {mid.lower() for mid in active}
+    counts = Counter(e.module.lower() for e in visible)
+    for mid, module in sorted(active.items()):
+        parent = parent_module(mid)
+        if module.depth > MAX_MODULE_DEPTH:
+            rows.append(f"{mid}：超过 {MAX_MODULE_DEPTH} 段，用 pmem migrate rename 缩短或提升为独立模块")
+        if parent and parent.lower() not in lowered:
+            rows.append(f"{mid}：父模块 {parent} 未登记，在 modules.yaml 登记它（可以只作为分组、不写路径）")
+        if module.legacy_parent:
+            rows.append(f"{mid}：parent 字段已不生效，父子关系改由名字表达："
+                        f"pmem migrate rename {mid} {module.legacy_parent}.{module.name} --apply，然后删掉 parent")
+        for item in module.related:
+            try:
+                known = registry.resolve_module(item["module"]).known
+            except RegistryError:
+                known = False
+            if not known:
+                rows.append(f"{mid}：related 里的 {item['module']} 不是登记的模块")
+        children = registry.children(mid)
+        if len(children) == 1 and not counts[mid.lower()] and not module.paths:
+            rows.append(f"{mid}：只有一个下级 {children[0]}、自己没有路径和记忆，层级多余："
+                        f"pmem migrate merge {children[0]} {mid} 或直接用下级当模块")
+    siblings: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for e in visible:
+        parent = parent_module(e.module)
+        if parent and e.kind not in RECORD_KINDS:
+            siblings[(parent, e.entity.lower())].add(e.module)
+    for (parent, entity), mods in sorted(siblings.items()):
+        if len(mods) >= 2:
+            rows.append(f"{parent} 的下级 {'、'.join(sorted(mods))} 都有议题 {entity} 的教训："
+                        f"对所有下级都成立就在 {parent} 写一条并 supersedes 替代它们")
+    return rows
+
+
+def _is_registered(registry, mid: str) -> bool:
+    try:
+        return registry.resolve_module(mid).known
+    except RegistryError:
+        return False
+
+
+def _misses(searches: list[dict]) -> list[tuple[str, str, int]]:
+    """检索落空（没返回任何记忆）与议题落空（按议题没找到、退回整模块）的热点。"""
+    counter: Counter = Counter()
+    for e in searches:
+        module = e.get("module") or "（全局）"
+        if not e.get("ids"):
+            what = e.get("entity") or (e.get("query") or "")[:30]
+            if not what and e.get("module"):
+                what = "（整模块浏览：当时模块里还没有记忆）"
+            elif not what:
+                # 早期日志没记录路径
+                what = f"路径 {e['path']}（未登记到模块）" if e.get("path") else "（按路径检索：路径未登记到模块）"
+            counter[(module, what)] += 1
+        elif e.get("fallback") == "module" and e.get("entity"):
+            counter[(module, f"议题 {e['entity']}（退回整模块）")] += 1
+    return [(m, what, n) for (m, what), n in counter.most_common(TOP)]
+
+
+def _reviewed_after(old, new) -> bool:
+    """较早那条是否在较晚那条写下之后被核对过。核对日期晚于写入日期即是；同一天时比核对时刻与较晚那条
+    ULID 里的生成时间，没记核对时刻（旧版本核对的）分不出先后，按没看过算，再 confirm 一次即可。"""
+    if not old.verified or old.verified < new.note_date:
+        return False
+    if old.verified > new.note_date:
+        return True
+    written = ulid_ms(new.id)
+    if not old.verified_at or not written:
+        return False
+    try:
+        at = datetime.fromisoformat(old.verified_at)
+    except ValueError:
+        return False
+    return (at if at.tzinfo else at.astimezone()).timestamp() * 1000 >= written
+
+
+def _contradictions(visible: list) -> list[dict]:
+    """同模块同议题、都还现行、正文高度相似但一条肯定一条否定（结论/决定 对 排除/更正）的记忆对。
+    较早那条在较晚那条写下之后被核对过，视为负责人已看过，不再提示。"""
+    groups: dict[tuple[str, str], list] = defaultdict(list)
+    for e in visible:
+        if e.kind != "risk":
+            groups[(e.module, e.entity)].append(e)
+    pairs = []
+    for (module, entity), items in groups.items():
+        tokens = {e.id: set(tokenize(e.content)) for e in items}
+        for i, a in enumerate(items):
+            for b in items[i + 1:]:
+                if (a.kind in NEGATIVE_KINDS) == (b.kind in NEGATIVE_KINDS):
+                    continue
+                if a.id in b.supersedes or b.id in a.supersedes:
+                    continue
+                old, new = sorted((a, b), key=lambda e: (e.note_date, e.id))
+                if _reviewed_after(old, new):
+                    continue
+                union = tokens[a.id] | tokens[b.id]
+                score = len(tokens[a.id] & tokens[b.id]) / len(union) if union else 0.0
+                if score >= CONTRADICTION_OVERLAP:
+                    pairs.append({"module": module, "entity": entity, "old": old.id, "old_kind": old.kind,
+                                  "new": new.id, "new_kind": new.kind, "overlap": round(score, 2)})
+    pairs.sort(key=lambda p: -p["overlap"])
+    return pairs[:TOP]
+
+
+def _repeat_corrections(entries: list, since: float) -> list[tuple[str, str, int]]:
+    """统计期内同一议题写了 2 条以上更正（含已被替代的）：同一类错误反复出现，原先的结论或防线没起作用。"""
+    counts = Counter((e.module, e.entity) for e in entries
+                     if e.kind == "correction" and ulid_ms(e.id) / 1000 >= since)
+    rows = [(m, ent, n) for (m, ent), n in counts.items() if n >= REPEAT_CORRECTIONS]
+    return sorted(rows, key=lambda r: (-r[2], r[0], r[1]))[:TOP]
+
+
+def _rule_shape(anchors: list[str]) -> str:
+    """按关联代码路径猜建议的规则形态（只提示，不生成规则代码）。"""
+    joined = " ".join(a.lower().replace("\\", "/") for a in anchors)
+    if any(p in joined for p in (".py", "/skills/", ".cursor/skills")):
+        if "/skills/" in joined or ".cursor/skills" in joined:
+            return "技能脚本里的参数和输出校验（Pydantic、Zod）"
+        return "ruff 自定义规则、类型标注收紧、断言"
+    if any(joined.endswith(ext) or f"{ext}#" in joined or f"{ext}/" in joined
+           for ext in (".ts", ".tsx", ".js", ".jsx")) or ".ts#" in joined or ".js#" in joined:
+        return "ESLint 规则、TypeScript 类型"
+    if ".cs" in joined:
+        return "Roslyn 分析器、[Obsolete]、编辑器校验"
+    return "检查清单、提交前脚本"
+
+
+def _rule_candidates(visible: list, searches: list[dict], rule_min: int, rule_searches: int,
+                     repeat: list[tuple[str, str, int]]) -> list[dict]:
+    """可以写成规则的教训：同议题现行防错类够多，或反复更正且该议题常被检索；已有 enforced_by 的议题跳过。"""
+    groups: dict[tuple[str, str], list] = defaultdict(list)
+    for e in visible:
+        if e.kind in PITFALL_KINDS:
+            groups[(e.module, e.entity)].append(e)
+    enforced_topics = {(e.module.lower(), e.entity.lower()) for e in visible if e.enforced}
+    search_hits: Counter = Counter()
+    for event in searches:
+        module = event.get("module") or ""
+        entity = event.get("entity") or ""
+        if module and entity:
+            search_hits[(module, entity)] += 1
+    repeat_set = {(m, ent) for m, ent, _ in repeat}
+    rows = []
+    for (module, entity), items in groups.items():
+        if (module.lower(), entity.lower()) in enforced_topics:
+            continue
+        hits = search_hits.get((module, entity), 0)
+        many = len(items) >= rule_min
+        repeated = (module, entity) in repeat_set and hits >= rule_searches
+        if not many and not repeated:
+            continue
+        anchors = list(dict.fromkeys(a for e in items for a in e.anchors))
+        titles = [e.title for e in sorted(items, key=lambda x: x.note_date, reverse=True)[:5]]
+        why = []
+        if many:
+            why.append(f"现行防错类 {len(items)} 条")
+        if repeated:
+            why.append(f"反复更正且检索 {hits} 次")
+        rows.append({
+            "module": module,
+            "entity": entity,
+            "count": len(items),
+            "searches": hits,
+            "titles": titles,
+            "suggest": _rule_shape(anchors),
+            "why": "；".join(why),
+        })
+    rows.sort(key=lambda r: (-r["count"], -r["searches"], r["module"], r["entity"]))
+    return rows[:TOP]
+
+
+def _cross_module_supersedes(entries: list, visible: set[str]) -> list[dict]:
+    """现行记忆替代了别的模块的记忆：被替代的那条从原模块的检索里消失，查原模块看不到新结论。
+    写入时已经拒绝，这里列出规则之前写下的，以及之后被 migrate move 搬到别处的。"""
+    by_id = {e.id: e for e in entries}
+    # 替代下级模块的记忆是允许的：查下级会带上本模块的教训
+    return [{"id": e.id, "module": e.module, "replaced": s, "replaced_module": by_id[s].module}
+            for e in entries if e.id in visible
+            for s in e.supersedes if s in by_id and by_id[s].module != e.module
+            and not is_descendant(by_id[s].module, e.module)]
+
+
+def _skipped(events: list[dict], entries: list, user: str, since: float) -> list[tuple[str, int]]:
+    """改了代码却没写功能记录（含回复“无需记录”）的模块，按对话数排；需要记录的模块以 stop 事件的 required 为准。"""
+    mine = [e for e in entries if e.author == user and ulid_ms(e.id) / 1000 >= since]
+    missed = _feature_coverage(events, _conversations(events), mine)["missed"]
+    return Counter(m["module"] for m in missed).most_common(TOP)
+
+
+def _hot_returns(events: list[dict], visible: list) -> list[dict]:
+    """同一对话只算一次；返回了却没在该对话写入（及对不上对话的 CLI 检索）≥ MIN_RETURNS_TO_REVIEW 的现行记忆。"""
+    _link_cli_searches(events)
+    known = {e.id: e for e in visible}
+    returned: Counter = Counter()
+    for c in _conversations(events).values():
+        returned.update(i for i in c["returned"] - c["recorded"] if i in known)
+    for e in events:
+        if e["type"] == "search" and e.get("ok") and not e.get("conv"):
+            returned.update(i for i in e.get("ids") or [] if i in known)
+    rows = []
+    for i, n in returned.most_common():
+        if n < MIN_RETURNS_TO_REVIEW or i not in known:
+            continue
+        e = known[i]
+        rows.append({"id": i, "module": e.module, "entity": e.entity, "returned": n, "title": e.title})
+        if len(rows) >= TOP:
+            break
+    return rows
+
+
+def build_health(root: Path, days: int = 60, now: float | None = None) -> dict:
+    now = now or time.time()
+    since = now - days * 86400
+    service = MemoryService(root)
+    try:
+        registry = service.registry
+        visible = service.index.visible()
+        all_entries = service.index.entries()
+        events = list(read_events(service.config.cache_dir, since))
+        stale = service.index.check_anchors(visible)
+        compact = service.compact_groups(min_size=COMPACT_MIN_GROUP)
+        try:
+            strays, stray_problem = stray_moves(service.storage, registry), None
+        except MigrateError as exc:
+            # 合并冲突后同一个记忆文件在新旧模块目录各留一份：作为一节列出，不让整份报告变成异常
+            strays, stray_problem = [], str(exc)
+        unmapped = coverage_report(service.root, registry)["unmapped"]
+        user = service.user
+        rule_min = int(service.config.get("health.rule_min"))
+        rule_searches = int(service.config.get("health.rule_searches"))
+        project_root = service.root
+    finally:
+        service.close()
+    searches_total = sum(1 for e in events if e["type"] == "search" and e.get("ok"))
+    used = {i for e in events if e["type"] in ("search", "mcp_search") for i in e.get("ids") or []}
+    used.update(i for e in events if e["type"] == "stop" for i in e.get("returned") or [])
+    cleanup = cleanup_candidates(project_root, registry, all_entries,
+                                 used if searches_total >= MIN_SEARCHES_FOR_IDLE else None)
+
+    registered = [mid for mid, m in registry.modules.items() if not m.merged_into]
+    counts = Counter(e.module for e in visible)
+
+    unregistered = []
+    for mid, n in sorted(counts.items()):
+        if _is_registered(registry, mid):
+            continue
+        unregistered.append({
+            "module": mid, "memories": n, "candidate": mid in registry.candidates,
+            "similar": difflib.get_close_matches(mid, registered, n=2, cutoff=0.6),
+        })
+    promotion_hints(project_root, registry, visible, unregistered)
+
+    searches = [e for e in events if e["type"] == "search" and e.get("ok")]
+    searched = {e.get("module") for e in events if e["type"] in SEARCH_EVENTS}
+    enough = len(searches) >= MIN_SEARCHES_FOR_IDLE
+    idle = sorted(m for m in registered if counts[m] and m not in searched and not registry.modules[m].deprecated) \
+        if enough else None
+
+    rejected = [e for e in events if e["type"] == "record_rejected"]
+    restarts = [e for e in events if e["type"] == "server_restart" and e.get("kind") != "reload"]
+    stale_by_module = Counter(e.module for e in visible if e.id in stale)
+    entities: dict[str, list[str]] = defaultdict(list)
+    for e in visible:
+        entities[e.module].append(e.entity)
+    repeat = _repeat_corrections(all_entries, since)
+
+    return {
+        "days": days,
+        "memories": len(visible),
+        "modules_registered": len(registered),
+        "unregistered": unregistered,
+        "duplicates": _duplicate_modules(registered + [u["module"] for u in unregistered]),
+        "hierarchy": _hierarchy_issues(registry, visible),
+        "strays": [{"id": s.entry_id, "from": s.source, "to": s.target} for s in strays],
+        "stray_problem": stray_problem,
+        "unmapped_dirs": unmapped,
+        "searches": len(searches),
+        "misses": _misses(searches),
+        "stale": {"total": len(stale), "by_module": stale_by_module.most_common(TOP),
+                  "ids": sorted(stale)[:TOP]},
+        "contradictions": _contradictions(visible),
+        "repeat_corrections": repeat,
+        "rule_candidates": _rule_candidates(visible, searches, rule_min, rule_searches, repeat),
+        "cross_supersedes": _cross_module_supersedes(all_entries, {e.id for e in visible}),
+        "skipped_records": _skipped(events, all_entries, user, since),
+        "cleanup": cleanup,
+        "idle_modules": idle,
+        "recall": recall_audit(registry, visible, searches) if enough else None,
+        "rejected": {"total": len(rejected),
+                     "by_reason": Counter(reject_reason(e.get("error") or "", e.get("code")) for e in rejected).most_common(),
+                     "by_module": Counter(e.get("module") or "？" for e in rejected).most_common(5)},
+        "server_restarts": Counter(e.get("reason") or "？" for e in restarts).most_common(TOP),
+        "seeds": Counter(e.module for e in visible if e.status == "seed").most_common(),
+        "compact": [(g["module"], g["entity"], g["count"]) for g in compact.get("groups", [])][:TOP],
+        "entity_pairs": [(m, a, b) for m, names in sorted(entities.items()) for a, b in similar_entity_pairs(names)][:TOP],
+        "hot_returns": _hot_returns(events, visible) if enough else [],
+        "umi": _umi_health(root, all_entries),
+    }
+
+
+def _umi_health(root: Path, entries: list) -> dict:
+    try:
+        from pmem.umi.governance import false_recall_rate, is_recovery_mode, run_governance
+        from pmem.umi.space import SpaceManager
+        from pmem.core.config import Config
+
+        config = Config.load(root)
+        umi_cfg = config.get("umi") or {}
+        if not isinstance(umi_cfg, dict) or not umi_cfg.get("enabled", True):
+            return {"enabled": False}
+        spaces = SpaceManager.from_config(root, config)
+        report = run_governance(root, list(entries), spaces=spaces, recovery_mode=is_recovery_mode(root))
+        return {
+            "enabled": True,
+            "recovery_mode": is_recovery_mode(root),
+            "findings": report.as_dict()["findings"],
+            "metrics": report.metrics,
+            "recovery_recommended": report.recovery_recommended,
+            # 占位：真实 false_recall 依赖标注数据；此处仅暴露 API
+            "false_recall_api": false_recall_rate.__name__,
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"enabled": True, "error": str(exc)}
+
+
+def render(h: dict) -> str:
+    lines = [f"pmem 健康报告（统计期 {h['days']} 天；检索与写入数据只来自本机）",
+             f"现行记忆 {h['memories']} 条，登记模块 {h['modules_registered']} 个"]
+    problems = 0
+
+    def section(title: str, rows: list[str], action: str) -> None:
+        nonlocal problems
+        if not rows:
+            return
+        problems += 1
+        lines.extend(["", f"【{title}】", *[f"  {r}" for r in rows], f"  → {action}"])
+
+    section("未登记模块（写入时自动新建）", [render_unregistered(u) for u in h["unregistered"]],
+            "笔误或归错（关联代码都归同一个已登记模块、其实是同一业务）就 pmem migrate merge <未登记模块> <正确模块>；"
+            "确属新业务就把建议的 paths 登记到 modules.yaml，比原模块的路径更具体时自动优先；冷候选用 pmem sync --apply 转正")
+    section("疑似重复模块", ["、".join(g) for g in h["duplicates"]],
+            "确认是同一业务后 pmem migrate merge <被并入> <保留>；其实是父子关系的，改名成 父模块.子模块（pmem migrate rename）")
+    section("父子模块结构", h.get("hierarchy") or [],
+            "按每行的建议处理；兄弟模块重复的教训对 Agent 说“按 pmem-consolidate 收口”时会一并提升")
+    section("记忆还在旧模块名下", [f"{s['id']}：{s['from']} → {s['to']}" for s in h["strays"][:TOP]]
+            + ([f"……另有 {len(h['strays']) - TOP} 条"] if len(h["strays"]) > TOP else []),
+            "pmem migrate tidy --apply 把它们搬到新模块名下")
+    section("记忆文件重复", [h["stray_problem"]] if h.get("stray_problem") else [],
+            "对比两份内容，删掉旧模块目录下那份后再运行 pmem migrate tidy --apply")
+    section("没有归属模块的代码目录", [f"{folder}：{n} 个文件" for folder, n in h["unmapped_dirs"]],
+            "在 modules.yaml 里把目录加进对应模块的 paths；新业务就登记新模块")
+    section(f"检索落空热点（本机 {h['searches']} 次检索）", [f"{m} / {what}：{n} 次" for m, what, n in h["misses"]],
+            "这些问题反复查不到：有结论就补写记忆，叫法不同就按 pmem-normalize 技能登记同义词")
+    s = h["stale"]
+    section(f"可能过时的记忆（{s['total']} 条）", [f"{m}：{n} 条" for m, n in s["by_module"]],
+            "打开关联代码核对：仍成立 pmem confirm <id>，不成立写 correction 替代；过时又没有替代结论的 pmem archive <id>")
+    section("疑似互相矛盾的记忆", [
+        f"{c['module']} / {c['entity']}：{c['old']}（{KIND_LABELS.get(c['old_kind'], c['old_kind'])}）"
+        f" 与 {c['new']}（{KIND_LABELS.get(c['new_kind'], c['new_kind'])}），正文相似度 {c['overlap']}"
+        for c in h["contradictions"]
+    ], "打开两条对照：确实冲突就写 correction 替代过时的那条（supersedes 填它的 id）；"
+       "只是互补就 pmem confirm <较早那条的 id>，之后不再提示")
+    section("同一议题反复更正（同类错误重复出现）",
+            [f"{m} / {e}：{n} 条更正" for m, e, n in h.get("repeat_corrections") or []],
+            "用 pmem graph --module <模块> --entity <议题> 看演变：缺排除项或风险就补一条（全项目都会踩的加 scope: project），"
+            "零碎的按 pmem-compact 合并成一条现状")
+    section("可以写成规则的教训（机械检查可拦，别只靠记忆提醒）",
+            [f"{r['module']} / {r['entity']}：{r['why']}；建议 {r['suggest']}；"
+             f"近例：{' / '.join(r['titles'][:3])}"
+             for r in h.get("rule_candidates") or []],
+            "和负责人确认后写成静态规则/类型校验/测试，再写一条 feature："
+            "enforced_by 填 规则文件#规则名，supersedes 填被替代的教训；之后摘要里会标「已由规则拦截」并靠后排")
+    section("替代了别的模块的记忆（原模块查不到新结论）",
+            [f"{c['module']} 的 {c['id']} 替代了 {c['replaced_module']} 的 {c['replaced']}"
+             for c in h.get("cross_supersedes") or []][:TOP],
+            "被替代的那条本来就归错了模块：pmem migrate move <被替代的 id> --to <新结论所在模块> --apply；"
+            "确实属于原模块：在原模块补一条 correction 替代它，正文说明新结论在哪个模块")
+    section("改了代码却没写功能记录（含回复“无需记录”的）",
+            [f"{m}：{n} 次对话" for m, n in h.get("skipped_records") or []],
+            "抽查这些对话：是用户要求的行为就补一条 feature（需求来源、必须保持的行为），免得以后被当冗余改回去；"
+            "确实只是测试、配置、重构的，把这类文件加进 gate.record_exempt")
+    cleanup = h.get("cleanup") or {"archive": [], "review": []}
+    section("建议归档（和代码已对不上，且满足全部条件）", [
+        f"{r['module']} / {r['entity']} {r['id']}：{r['title']}｜{'；'.join(r['basis'])}" for r in cleanup["archive"][:TOP]
+    ] + ([f"……另有 {len(cleanup['archive']) - TOP} 条"] if len(cleanup["archive"]) > TOP else []),
+            "逐条确认后 pmem archive <id>（只归档不删除，pmem archive --restore 可恢复）")
+    section("清理待核对（和代码对不上，但不满足全部归档条件）", [
+        f"{r['module']} / {r['entity']} {r['id']}：{r['title']}｜{'；'.join(r['basis'])}" for r in cleanup["review"][:TOP]
+    ] + ([f"……另有 {len(cleanup['review']) - TOP} 条"] if len(cleanup["review"]) > TOP else []),
+            "打开记忆和当前代码对照：仍成立 pmem confirm <id>；代码搬家了用 pmem anchors --rename；不成立写 correction 替代")
+    if h["idle_modules"]:
+        section(f"统计期内本机没检索过的模块（{len(h['idle_modules'])} 个）", ["、".join(h["idle_modules"][:20])],
+                "可能是没人改这些模块，也可能是路径没登记全导致闸门没提醒；对照 pmem doctor 的覆盖率看；"
+                "长期冷、又确定过时的对 Agent 说“按 pmem-consolidate 收口”")
+    section(
+        f"返回却未写入 {MIN_RETURNS_TO_REVIEW} 次以上的记忆（值得复查：过时 / 摘要不清 / 归错模块）",
+        [f"[{r['id']}] {r['module']}/{r['entity']} 返回未写 {r['returned']} 次：{r['title']}"
+         for r in h.get("hot_returns") or []],
+        "打开记忆核对：仍成立 pmem confirm <id>；过时写 correction 或 pmem archive <id>；"
+        "摘要含糊就改写 summary；归错模块 pmem migrate move；更细的“返回却未采用”见 pmem report",
+    )
+    section("召回偏低（记忆多、常被检索，但大部分教训从没被返回过）", [render_recall(r) for r in h.get("recall") or []],
+            "用 pmem search --module <模块> --entity <议题> 看从没返回的议题：常问却查不到的给记忆补 aliases、"
+            "按 pmem-normalize 登记同义词；模块管得太宽就 pmem migrate split <模块> --by entity --to <新模块>=<议题> 拆开；已过时的按清理候选处理")
+    r = h["rejected"]
+    section(f"被拒绝的写入（{r['total']} 次）", [f"{label}：{n} 次" for label, n in r["by_reason"]]
+            + ([f"集中在：{'、'.join(f'{m} {n} 次' for m, n in r['by_module'])}"] if r["by_module"] else []),
+            "字数或上限拒绝多：提醒合并成一条再写；模块名错误多：给常用叫法加 aliases")
+    section(f"MCP 服务被看门狗重启（{sum(n for _, n in h['server_restarts'])} 次）",
+            [f"{reason}：{n} 次" for reason, n in h["server_restarts"]],
+            "偶发可忽略；反复崩溃看 Cursor 的 MCP 日志，反复超时可调大 config.yaml 的 server.request_timeout")
+    section("待确认的种子记忆", [f"{m}：{n} 条" for m, n in h["seeds"]],
+            "pmem seed 查看，确认后 pmem seed --accept --module <模块>")
+    section(f"零碎记忆可合并（每个议题 {COMPACT_MIN_GROUP} 条以上）", [f"{m} / {e}：{n} 条" for m, e, n in h["compact"]],
+            "对 Agent 说“按 pmem-compact 技能合并记忆”")
+    section("同一模块里名字相近的议题", [f"{m}：{a} / {b}" for m, a, b in h["entity_pairs"]],
+            "是同一议题时，以后写入统一用一个名字；旧记忆可按 pmem-compact 合并")
+    umi = h.get("umi") or {}
+    if umi.get("enabled"):
+        findings = umi.get("findings") or []
+        section(
+            f"UMI 治理（critical={sum(1 for f in findings if f.get('severity')=='critical')}）",
+            [f"[{f.get('severity')}] {f.get('area')}: {f.get('message')}" for f in findings[:TOP]],
+            "严重问题先 pmem umi recovery --enable，再 pmem umi governance / rollback；"
+            "隔离违规必须为 0；不要在异常时继续自动整理",
+        )
+        if umi.get("recovery_mode") or umi.get("recovery_recommended"):
+            problems += 1
+            lines += ["", "⚠ UMI 建议或已处于 Recovery Mode"]
+    if not problems:
+        lines += ["", "没有需要处理的问题"]
+    return "\n".join(lines)
+
+
+def run_health(root: Path, days: int, as_json: bool) -> int:
+    report = build_health(root, days)
+    print(json.dumps(report, ensure_ascii=False, indent=2) if as_json else render(report))
+    return 0

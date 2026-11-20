@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "pmem": {
+      "command": "pmem",
+      "args": [
+        "serve",
+        "--root",
+        "${workspaceFolder}"
+      ]
+    }
+  }
+}

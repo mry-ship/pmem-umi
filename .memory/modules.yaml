@@ -1,0 +1,129 @@
+schema_version: 1
+categories:
+  feature:
+    label: 业务功能
+  infra:
+    label: 技术底座
+  personal:
+    label: personal
+  team:
+    label: team
+  domain:
+    label: domain
+entities: {}
+synonyms:
+- - 隔离
+  - isolation
+  - scope
+- - 可信
+  - trust
+  - 证据
+  - evidence
+- - 召回
+  - recall
+  - 检索
+- - 漂移
+  - drift
+modules:
+  infra.Umi:
+    paths:
+    - src/pmem/umi/**
+    entities:
+    - Space
+    - Trust
+    - Version
+    - SafeRecall
+    - Governance
+    - Profile
+  infra.Core:
+    paths:
+    - src/pmem/core/**
+    entities:
+    - Entry
+    - Config
+    - Schema
+  infra.Service:
+    paths:
+    - src/pmem/service/**
+    entities:
+    - Record
+    - Search
+    - UmiOps
+  infra.Storage:
+    paths:
+    - src/pmem/storage/**
+    - src/pmem/index/**
+  infra.Cli:
+    paths:
+    - src/pmem/cli/**
+  infra.Server:
+    paths:
+    - src/pmem/server/**
+    - src/pmem/hooks/**
+  infra.Metrics:
+    paths:
+    - src/pmem/metrics/**
+  infra.Catalog:
+    paths:
+    - src/pmem/catalog/**
+    - src/pmem/scan/**
+  infra.Generate:
+    paths:
+    - src/pmem/generate/**
+  infra.Vcs:
+    paths:
+    - src/pmem/vcs/**
+    - src/pmem/context/**
+    - src/pmem/importers/**
+    - src/pmem/bench/**
+  feature.Src:
+    paths:
+    - src/pmem/__init__.py
+    entities:
+    - Package
+  feature.Tests:
+    paths:
+    - tests/**
+  personal.Prefs:
+    paths:
+    - personal/prefs/**
+    origin: profile:personal
+  personal.Habits:
+    paths:
+    - personal/habits/**
+    origin: profile:personal
+  team.Norms:
+    paths:
+    - team/norms/**
+    origin: profile:team
+  team.Playbook:
+    paths:
+    - team/playbook/**
+    origin: profile:team
+  domain.Patterns:
+    paths:
+    - domain/patterns/**
+    origin: profile:domain
+  domain.Constraints:
+    paths:
+    - domain/constraints/**
+    origin: profile:domain
+candidates:
+  feature.Bench:
+    paths:
+    - bench/**
+    origin: sync
+  feature.Scripts:
+    paths:
+    - scripts/**
+    origin: sync
+  feature.Spike:
+    paths:
+    - spike/**
+    origin: sync
+third_party: []
+ignored:
+- .venv/**
+- '**/__pycache__/**'
+- .git/**
+- docs/**

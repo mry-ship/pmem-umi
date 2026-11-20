@@ -1,0 +1,98 @@
+"""pmem spec：模块规格的骨架、目录和完成情况。正文由 pmem-spec 技能写。"""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+from pmem.core.config import Config
+from pmem.core.registry import ModuleRegistry, RegistryError
+from pmem.generate.spec import format_list, incomplete, index_specs, init_specs, project_spec_dir, spec_prefill
+
+__all__ = ["ensure_spec_skeletons", "run_spec"]
+
+
+def _memory_prefill(root: Path, config: Config) -> dict:
+    """直接读记忆文件（不走索引/嵌入），取现行、未被替代的记忆，构造规格预填。读不出时返回空、照旧铺空骨架。"""
+    try:
+        from pmem.core.entry import VISIBLE_STATUSES
+        from pmem.storage.files import FilesStorage
+        from pmem.vcs.detect import detect_vcs
+
+        storage = FilesStorage(root, detect_vcs(root, config.get("vcs")))
+        entries = [entry for _, entry in storage.iter_all()]
+        superseded = {s for e in entries for s in e.replaces()}
+        current = [e for e in entries
+                   if e.status in VISIBLE_STATUSES and e.id not in superseded]
+        return spec_prefill(current)
+    except Exception:  # noqa: BLE001  预填只是便利，任何读失败都不该挡住骨架生成
+        return {}
+
+
+def ensure_spec_skeletons(root: Path) -> tuple[int, str]:
+    """给已登记模块补还没有的规格骨架。正文不在这里写。"""
+    config = Config.load(root)
+    if not config.modules_path.exists():
+        return 0, "还没有模块名单，规格等划分模块后再补"
+    target = project_spec_dir(root, str(config.get("spec.dir") or ""))
+    if target is None:
+        return 2, "spec.dir 指向了项目目录以外，规格骨架未写"
+    try:
+        registry = ModuleRegistry.load(config.modules_path)
+    except RegistryError as exc:
+        return 2, f"模块名单读不了，规格骨架未写：{exc}"
+    if not any(not module.merged_into for module in registry.modules.values()):
+        return 0, "还没有已登记模块，规格目录等划分模块后再补"
+    result = init_specs(registry, target, prefill=_memory_prefill(root, config))
+    if result.blocked:
+        return 2, f"有 {len(result.blocked)} 个模块不能写成规格文件：{'、'.join(result.blocked[:10])}"
+    return 0, f"规格骨架：新写 {result.written}，已有 {result.skipped}，目录 {target}"
+
+
+def run_spec(root: Path, action: str | None, check: bool) -> int:
+    config = Config.load(root)
+    target = project_spec_dir(root, str(config.get("spec.dir") or ""))
+    if target is None:
+        print("spec.dir 指向了项目目录以外，已拒绝", file=sys.stderr)
+        return 2
+    try:
+        registry = ModuleRegistry.load(config.modules_path)
+    except RegistryError as exc:
+        print(f"模块名单读不了：{exc}", file=sys.stderr)
+        return 2
+    if action == "init":
+        code, message = ensure_spec_skeletons(root)
+        print(message, file=sys.stderr if code else sys.stdout)
+        return code
+    if action in ("fill", "complete"):
+        code, message = ensure_spec_skeletons(root)
+        if code:
+            print(message, file=sys.stderr)
+            return code
+        if not message.startswith("规格骨架"):
+            print(message)
+            return 0
+        index_specs(registry, target)
+        missing = incomplete(registry, target)
+        print("补全模块规格：本命令铺骨架并列出缺谁，正文由 Agent 按 pmem-spec 写到至少九成八。")
+        print(message)
+        if not missing:
+            print("规格首稿都已写完。单独拿走做出相似或一样的实现，仍要按 pmem-spec 合上代码反推，"
+                  "直到已实现的对外契约能从规格还原到至少九成八。")
+            return 0
+        print("这些模块的四份正文还没写全：" + "、".join(missing))
+        print("本命令只铺骨架、不写正文。按 pmem-spec 对上面每个模块：先按代码写满骨架栏目"
+              "（含入参和出参字段闭集、失败条件、配置与环境变量、生成物、须按字面抄的原文、依赖规格），"
+              "再合上代码反推，推不出的补进规格，直到能单独拿走、已实现的对外契约能从规格还原到至少九成八。")
+        return 1
+    if action == "index":
+        result = index_specs(registry, target)
+        if result.blocked:
+            print(f"有 {len(result.blocked)} 个模块不能写成规格文件：{'、'.join(result.blocked[:10])}",
+                  file=sys.stderr)
+            return 2
+        print(f"规格目录已更新：{result.index}")
+        return 0
+    print(format_list(registry, target))
+    if check and incomplete(registry, target):
+        return 1
+    return 0

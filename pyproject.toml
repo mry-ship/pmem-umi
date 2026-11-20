@@ -1,0 +1,54 @@
+[project]
+name = "pmem"
+version = "0.1.0"
+description = "PMEM · Universal Memory Infrastructure v0.1：长期可运行的记忆/知识/上下文治理基础设施（隔离 / 信任 / 版本 / Safe Recall）"
+requires-python = ">=3.10"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+dependencies = [
+    "mcp>=2.3.0",
+    "numpy>=2.2.6",
+    "pyyaml>=6.0",
+    "wcmatch>=10.0",
+]
+
+[project.scripts]
+pmem = "pmem.cli.main:main"
+
+# Windows 无控制台入口：Cursor/Claude/Codex 的 Hook 与 MCP 用它，避免每次弹黑框。
+# 终端里给人用的仍是上面的 pmem（控制台版）。非 Windows 上两者行为相同。
+[project.gui-scripts]
+pmemw = "pmem.cli.main:main"
+
+[project.optional-dependencies]
+embed = [
+    "fastembed>=0.9.0",
+]
+bench = [
+    "cursor-sdk",
+]
+import = [
+    "lancedb>=0.6",
+]
+
+[dependency-groups]
+dev = [
+    "lancedb>=0.6",
+    "pyright>=1.1.414",
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pmem"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"

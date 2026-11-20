@@ -1,0 +1,299 @@
+"""解析 Cursor Hook 的标准输入。
+
+Windows 中文系统上，Cursor 经 PowerShell 转发输入：UTF-8 字节先被按 GBK 解码，再以带 BOM 的 UTF-8 写出，
+含中文时 JSON 常被破坏。因此按“原样 → GBK 回转 → 正则提取 ASCII 字段”三级兜底。
+"""
+from __future__ import annotations
+
+import json
+import re
+
+_FIELDS = ("conversation_id", "generation_id", "hook_event_name", "tool_name", "status", "cwd", "prompt",
+           "transcript_path")
+_TRANSCRIPT_TAIL = 512 * 1024
+_USER_QUERY = re.compile(r"<user_query>\s*(.*?)\s*</user_query>", re.DOTALL)
+_INPUT_FIELDS = ("file_path", "command", "cwd", "module", "path", "entity", "kind", "query", "target_directory",
+                 "draft_id", "target_file", "target_notebook")
+_PATH_KEYS = ("file_path", "path", "target_file", "target_notebook", "target_directory")
+_PATH_LIST_KEYS = ("target_directories", "paths")
+
+
+def _pua_bytes(char: str) -> bytes | None:
+    """Windows 代码页 936 把 GBK 用户自定义区的双字节解成私有区字符（U+E000–U+E765），Python 的 gbk 编码表没有
+    这段映射。UTF-8 中文的尾字节和后面的 \\ 或 " 拼成这种字符很常见（如“符\\n”变成 U+E6C2），不还原就会吞掉转义。"""
+    code = ord(char)
+    if 0xE000 <= code <= 0xE233:
+        lead, trail = divmod(code - 0xE000, 94)
+        return bytes((0xAA + lead, 0xA1 + trail))
+    if 0xE234 <= code <= 0xE4C5:
+        lead, trail = divmod(code - 0xE234, 94)
+        return bytes((0xF8 + lead, 0xA1 + trail))
+    if 0xE4C6 <= code <= 0xE765:
+        lead, offset = divmod(code - 0xE4C6, 96)
+        return bytes((0xA1 + lead, 0x40 + offset + (offset >= 0x3F)))
+    return None
+
+
+def _ungarble(text: str) -> str:
+    try:
+        data = bytearray()
+        for char in text:
+            pua = _pua_bytes(char)
+            data += pua if pua is not None else char.encode("gbk", errors="replace")
+        return data.decode("utf-8", errors="replace")
+    except Exception:  # noqa: BLE001
+        return text
+
+
+def _damage(text: str) -> int:
+    """误解码留下的痕迹：替换符和私有区字符的个数。"""
+    return sum(1 for c in text if c == "\ufffd" or 0xE000 <= ord(c) <= 0xF8FF)
+
+
+def _string_field(text: str, key: str) -> str | None:
+    match = re.search(r'(?<!\\)"' + re.escape(key) + r'"\s*:\s*"((?:[^"\\]|\\.)*)"', text)
+    if not match:
+        return None
+    try:
+        value = json.loads(f'"{match.group(1)}"')
+    except json.JSONDecodeError:
+        value = match.group(1)
+    if not value.isascii():
+        repaired = _ungarble(value)
+        if "\ufffd" not in repaired:
+            value = repaired
+    return value
+
+
+def _extract(text: str) -> dict:
+    data: dict = {}
+    for key in _FIELDS:
+        value = _string_field(text, key)
+        if value is not None:
+            data[key] = value
+    head = text.split('"tool_input"', 1)
+    inputs = {}
+    if len(head) == 2:
+        for key in _INPUT_FIELDS:
+            value = _string_field(head[1], key)
+            if value is not None:
+                inputs[key] = value
+        # 一次删多个文件的 file_paths 是列表；抠不出来会让这些文件绕过闸门
+        listed = re.search(r'"file_paths"\s*:\s*\[([^\]]*)\]', head[1])
+        if listed:
+            items = [_string_field('"x":' + raw, "x") for raw in re.findall(r'"(?:[^"\\]|\\.)*"', listed.group(1))]
+            inputs["file_paths"] = [i for i in items if i]
+        data["tool_input"] = inputs
+    path = _string_field(text, "file_path")
+    if path is not None:
+        data["file_path"] = path
+    if data:
+        data["_partial"] = True
+    return data
+
+
+def parse_payload(raw: bytes) -> dict:
+    text = raw.decode("utf-8", errors="replace").lstrip("\ufeff")
+    candidates = [text]
+    if not text.isascii():
+        candidates.append(_ungarble(text))
+    # 误解码后的 JSON 也可能恰好合法，只是丢了字符；原样和回转都能解析时取痕迹少的那份
+    parsed = []
+    for candidate in candidates:
+        try:
+            data = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            parsed.append((_damage(candidate), data))
+    if parsed:
+        return min(parsed, key=lambda item: item[0])[1]
+    return _extract(text)
+
+
+# Hook 实际会读的字段：类型不对时记警告并放行（闸门不能因数据结构变化卡住开发）
+_HOOK_STR = ("conversation_id", "generation_id", "hook_event_name", "tool_name", "status", "cwd", "prompt",
+             "transcript_path", "file_path")
+_HOOK_LIST = ("workspace_roots",)
+
+
+def validate_hook_payload(data: dict) -> list[str]:
+    """只校验 pmem 用到的字段；结构不对返回警告列表，不抛错。"""
+    if not isinstance(data, dict):
+        return ["Hook 输入应是键值对"]
+    warnings: list[str] = []
+    for key in _HOOK_STR:
+        if key in data and data[key] is not None and not isinstance(data[key], str):
+            warnings.append(f"Hook 字段 {key} 应是字符串，实际是 {type(data[key]).__name__}")
+    for key in _HOOK_LIST:
+        if key in data and data[key] is not None and not isinstance(data[key], list):
+            warnings.append(f"Hook 字段 {key} 应是列表，实际是 {type(data[key]).__name__}")
+    if "tool_input" in data and data["tool_input"] is not None:
+        value = data["tool_input"]
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError:
+                warnings.append("Hook 字段 tool_input 不是合法 JSON 对象")
+                value = None
+        if value is not None and not isinstance(value, dict):
+            warnings.append(f"Hook 字段 tool_input 应是键值对，实际是 {type(value).__name__}")
+    return warnings
+
+
+def _garbled_patterns(needle: str) -> list[re.Pattern]:
+    """needle 的 UTF-8 字节被按 GBK 误解码后可能呈现的样子（两种字节对齐），损坏处用通配。"""
+    data = needle.encode("utf-8")
+    patterns = []
+    for offset in (0, 1, 2):
+        chunk = data[offset:]
+        if len(chunk) % 2:
+            chunk = chunk[:-1]
+        decoded = chunk.decode("gbk", errors="replace")
+        pieces = [p for p in decoded.split("\ufffd") if p]
+        if sum(len(p) for p in pieces) >= 2:
+            patterns.append(re.compile(".{0,2}".join(re.escape(p) for p in pieces), re.DOTALL))
+    return patterns
+
+
+def fuzzy_contains(haystack: str, needle: str) -> bool:
+    """在可能被转码损坏的文本里查找标记：原文、GBK 回转、按误解码形态三种方式。"""
+    if not needle:
+        return False
+    if needle in haystack or needle in _ungarble(haystack):
+        return True
+    if needle.isascii():
+        return False
+    return any(p.search(haystack) for p in _garbled_patterns(needle))
+
+
+_NEGATIONS = ("不", "别", "勿", "没", "避免", "防止", "如何", "怎么", "是否")
+# 紧跟在标记后面仍算“要求跳过”的语气词；跟着别的字（如“跳过记忆审查”“跳过记忆的逻辑”）是在谈论这件事
+_PARTICLES = set("吧了呀啊哈呢嘛")
+
+
+def _standalone(text: str, start: int, marker: str) -> bool:
+    after = text[start + len(marker):start + len(marker) + 1]
+    if after and after.isalnum() and after not in _PARTICLES:
+        return False
+    before = text[max(0, start - 4):start]
+    return not any(word in before for word in _NEGATIONS)
+
+
+def readable(text: str, marker: str) -> str:
+    """原文或反解乱码后的文本里，能找到 marker 的那一份；都找不到时返回原文。"""
+    fixed = _ungarble(text)
+    return fixed if marker not in text and marker in fixed else text
+
+
+def asks_to_skip(text: str, marker: str) -> bool:
+    """用户是在要求跳过（“这次跳过记忆”），而不是在谈论它（“避免跳过记忆审查”“不要跳过记忆”）。"""
+    if not marker:
+        return False
+    for candidate in (text, _ungarble(text)):
+        starts = [m.start() for m in re.finditer(re.escape(marker), candidate)]
+        if starts:
+            return any(_standalone(candidate, i, marker) for i in starts)
+    # 只剩误解码形态时看不清上下文，按出现即算
+    return fuzzy_contains(text, marker)
+
+
+def tool_input(data: dict) -> dict:
+    value = data.get("tool_input")
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _local_path(raw: str) -> str:
+    """Cursor 把 Windows 路径写成 /c:/Users/...。"""
+    return raw[1:] if re.match(r"^/[A-Za-z]:", raw) else raw
+
+
+def workspace_root(data: dict) -> str | None:
+    roots = data.get("workspace_roots") or []
+    return _local_path(str(roots[0])) if roots else None
+
+
+def _text_of(content) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(str(block.get("text") or "") for block in content
+                         if isinstance(block, dict) and block.get("type") == "text")
+    return ""
+
+
+def tool_paths(args: dict) -> list[str]:
+    """工具参数里的文件或目录路径（Read、Grep、Glob、语义搜索各家字段名不同）。"""
+    paths = [str(args[k]) for k in _PATH_KEYS if isinstance(args.get(k), str) and args[k]]
+    for key in _PATH_LIST_KEYS:
+        if isinstance(args.get(key), list):
+            paths += [str(p) for p in args[key] if isinstance(p, str) and p]
+    return paths
+
+
+def _transcript_tail(transcript_path: str | None) -> list[tuple[str, list]] | None:
+    """对话记录（JSONL，UTF-8，不受 Hook 转码影响）末尾的消息，从新到旧，每条为（角色, 内容块）；读不到时返回 None。"""
+    if not transcript_path:
+        return None
+    try:
+        with open(_local_path(str(transcript_path)), "rb") as fh:
+            fh.seek(0, 2)
+            fh.seek(max(0, fh.tell() - _TRANSCRIPT_TAIL))
+            lines = fh.read().decode("utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    records = []
+    for line in reversed(lines):
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(record, dict):
+            continue
+        message = record.get("message") if isinstance(record.get("message"), dict) else {}
+        role = record.get("role") or message.get("role") or record.get("type")
+        content = message.get("content", record.get("content"))
+        records.append((role, content if isinstance(content, list) else [{"type": "text", "text": content or ""}]))
+    return records
+
+
+def last_user_text(transcript_path: str | None) -> str | None:
+    """最后一条用户消息的文字。Cursor 的消息里还夹着附件和系统提示，只取 <user_query> 里的部分。"""
+    for role, content in _transcript_tail(transcript_path) or []:
+        if role != "user":
+            continue
+        # Claude Code 把工具结果也记成 user 消息，它们没有 text 块
+        text = _text_of(content)
+        if text.strip():
+            query = _USER_QUERY.search(text)
+            return query.group(1) if query else text
+    return None
+
+
+def turn_reply_text(transcript_path: str | None) -> str:
+    """本轮（最后一条用户消息之后）Agent 写给用户的文字，按先后拼接。"""
+    parts: list[str] = []
+    for role, content in _transcript_tail(transcript_path) or []:
+        if role == "user" and _text_of(content).strip():
+            break
+        if role == "assistant":
+            parts.append(_text_of(content))
+    return "\n".join(reversed(parts))
+
+
+def turn_tool_paths(transcript_path: str | None, tools: set[str]) -> list[str]:
+    """本轮（最后一条用户消息之后）Agent 用指定工具看过的路径。Hook 没覆盖到的工具也能从这里补上。"""
+    paths: list[str] = []
+    for role, content in _transcript_tail(transcript_path) or []:
+        if role == "user" and _text_of(content).strip():
+            break
+        for block in content:
+            if (isinstance(block, dict) and block.get("type") == "tool_use"
+                    and str(block.get("name") or "").lower() in tools and isinstance(block.get("input"), dict)):
+                paths += tool_paths(block["input"])
+    return list(dict.fromkeys(reversed(paths)))
