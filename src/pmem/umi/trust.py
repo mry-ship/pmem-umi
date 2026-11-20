@@ -177,3 +177,29 @@ def detect_claim_conflicts(
         if incoming_kind == "correction" and kind == "conclusion" and claim.fingerprint() == incoming.fingerprint():
             conflicts.append(ConflictItem(mem_id, "incoming", "correction 针对同主张，需 supersedes"))
     return conflicts
+
+
+class DefaultTrustManager:
+    """TrustManager 端口的默认实现：纯规则，无存储依赖。"""
+
+    def parse(self, record: Any) -> TrustInfo:
+        from pmem.umi.core.types import MemoryRecord
+
+        if isinstance(record, MemoryRecord):
+            if record.trust is not None:
+                return record.trust
+            return parse_trust(record.extra, legacy_status=record.status, verified=record.verified)
+        extra = getattr(record, "extra", None) or {}
+        return parse_trust(
+            extra,
+            legacy_status=str(getattr(record, "status", "active")),
+            verified=bool(getattr(record, "verified", False)),
+        )
+
+    def disposition(self, trust: TrustInfo) -> str:
+        return recall_disposition(trust)
+
+    def promotion_risk(
+        self, trust_status: str, *, is_spec: bool = False, is_decision: bool = False
+    ) -> str:
+        return promotion_risk(trust_status, is_spec=is_spec, is_decision=is_decision)

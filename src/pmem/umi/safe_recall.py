@@ -2,16 +2,20 @@
 
 顺序：身份 → Profile/项目 → 模块/实体 → 硬隔离 → 混合检索 → 状态/证据/有效期 → 排除冲突 → 组装。
 模型不能绕过 Scope 过滤。
+
+依赖 MemoryRetriever / TrustManager 端口，不依赖 pmem.Entry。
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from pmem.umi.core.ports import MemoryRetriever, TrustManager
+from pmem.umi.core.types import MemoryHit, MemoryRecord, RetrieveResult
 from pmem.umi.models import TrustInfo
 from pmem.umi.profiles.cross_space import inbound_disposition
 from pmem.umi.space import IsolationError, SpaceContext, SpaceManager
-from pmem.umi.trust import parse_trust, recall_disposition
+from pmem.umi.trust import DefaultTrustManager, parse_trust, recall_disposition
 
 
 @dataclass
@@ -62,8 +66,59 @@ class RecallResult:
 @dataclass
 class SafeRecall:
     spaces: SpaceManager
-    search_fn: Callable[..., dict[str, Any]]
+    retriever: MemoryRetriever | None = None
+    trust_manager: TrustManager | None = None
+    # 兼容旧调用：无 retriever 时用 search_fn + entry_lookup
+    search_fn: Callable[..., dict[str, Any]] | None = None
     entry_lookup: Callable[[str], Any] | None = None
+
+    def _trust_of(self, hit: MemoryHit, record: MemoryRecord | None = None) -> TrustInfo:
+        tm = self.trust_manager or DefaultTrustManager()
+        if hit.trust is not None:
+            return hit.trust
+        if record is not None:
+            return tm.parse(record)
+        return parse_trust(
+            hit.payload.get("trust") if isinstance(hit.payload.get("trust"), dict) else {},
+            legacy_status=hit.status,
+            verified=hit.verified,
+        )
+
+    def _retrieve(self, **kwargs) -> RetrieveResult:
+        if self.retriever is not None:
+            return self.retriever.search(**kwargs)
+        if self.search_fn is None:
+            return RetrieveResult(ok=False, error="未配置 MemoryRetriever", code="retriever_missing")
+        try:
+            raw = self.search_fn(**kwargs)
+        except Exception as exc:  # noqa: BLE001
+            return RetrieveResult(ok=False, error=str(exc), code="search_error")
+        if not raw.get("ok"):
+            return RetrieveResult(
+                ok=False,
+                error=str(raw.get("error") or "检索失败"),
+                code=raw.get("code"),
+                raw=raw,
+            )
+        hits: list[MemoryHit] = []
+        for row in list(raw.get("items") or []) + list(raw.get("features") or []):
+            if not isinstance(row, dict) or not row.get("id"):
+                continue
+            hits.append(
+                MemoryHit(
+                    id=str(row["id"]),
+                    module=str(row.get("module") or ""),
+                    entity=str(row.get("entity") or ""),
+                    kind=str(row.get("kind") or ""),
+                    summary=str(row.get("summary") or ""),
+                    status=str(row.get("status") or "active"),
+                    verified=bool(row.get("verified")),
+                    stale=bool(row.get("stale")),
+                    conflict=bool(row.get("conflict")),
+                    payload=dict(row),
+                )
+            )
+        return RetrieveResult(ok=True, hits=hits, raw=raw)
 
     def recall(
         self,
@@ -81,10 +136,8 @@ class SafeRecall:
         full: bool = False,
         ids: list[str] | None = None,
     ) -> RecallResult:
-        # 1–2. 身份与空间已在 ctx
         ctx.allow_cross_reference = allow_reference
 
-        # 3–4. 先硬隔离：禁止无空间上下文的裸搜
         if not ctx.space.project_id:
             return RecallResult(
                 ok=False,
@@ -92,51 +145,76 @@ class SafeRecall:
                 code="scope_missing",
             )
 
-        # 5. 混合检索（底层仍用现有 index；此处加安全过滤）
-        try:
-            raw = self.search_fn(
-                module=module,
-                path=path,
-                entity=entity,
-                query=query,
-                limit=limit,
-                source_conversation=source_conversation,
-                as_of=as_of,
-                full=full,
-                ids=ids,
-                when=when,
-            )
-        except Exception as exc:  # noqa: BLE001
-            return RecallResult(ok=False, refusals=[str(exc)], code="search_error")
+        result = self._retrieve(
+            module=module,
+            path=path,
+            entity=entity,
+            query=query,
+            limit=limit,
+            source_conversation=source_conversation,
+            as_of=as_of,
+            full=full,
+            ids=ids,
+            when=when,
+        )
+        if not result.ok:
+            return RecallResult(ok=False, refusals=[result.error or "检索失败"], code=result.code)
 
-        if not raw.get("ok"):
-            return RecallResult(
-                ok=False,
-                refusals=[str(raw.get("error") or "检索失败")],
-                code=raw.get("code"),
-            )
-
+        tm = self.trust_manager or DefaultTrustManager()
         items_out: list[RecallItem] = []
         withheld: list[RecallItem] = []
         refusals: list[str] = []
 
-        for row in list(raw.get("items") or []) + list(raw.get("features") or []):
-            if not isinstance(row, dict) or not row.get("id"):
-                continue
-            mem_id = str(row["id"])
-            entry = self.entry_lookup(mem_id) if self.entry_lookup else None
-            space_meta = {}
-            legacy_status = str(row.get("status") or "active")
-            verified = bool(row.get("verified") or (getattr(entry, "verified", None) if entry else None))
-            if entry is not None:
-                extra = getattr(entry, "extra", {}) or {}
-                space_meta = extra.get("space") if isinstance(extra.get("space"), dict) else {}
-                trust = parse_trust(extra, legacy_status=entry.status, verified=bool(entry.verified))
-            else:
-                trust = parse_trust(row.get("trust") if isinstance(row.get("trust"), dict) else {},
-                                    legacy_status=legacy_status, verified=verified)
+        for hit in list(result.hits) + list(result.features):
+            record = None
+            if self.entry_lookup:
+                raw_entry = self.entry_lookup(hit.id)
+                if raw_entry is not None and hasattr(raw_entry, "extra"):
+                    extra = getattr(raw_entry, "extra", None) or {}
+                    # 完整 Entry 才走 Adapter 转换；评测/桩对象只取 space/trust
+                    if getattr(raw_entry, "id", None) and getattr(raw_entry, "module", None) is not None:
+                        from pmem.umi.adapters.pmem import entry_to_record
 
-            # 硬隔离 + 目标 Profile inbound_default
+                        record = entry_to_record(raw_entry)
+                        if not hit.module:
+                            hit.module = record.module
+                        if hit.trust is None:
+                            hit.trust = record.trust
+                        if hit.space is None:
+                            hit.space = record.space
+                    else:
+                        if hit.trust is None:
+                            hit.trust = parse_trust(
+                                extra,
+                                legacy_status=str(getattr(raw_entry, "status", hit.status) or "active"),
+                                verified=bool(getattr(raw_entry, "verified", False)),
+                            )
+                        if hit.space is None and isinstance(extra.get("space"), dict):
+                            from pmem.umi.models import SpaceRef
+
+                            sp = extra["space"]
+                            hit.space = SpaceRef(
+                                profile_id=str(sp.get("profile_id") or ""),
+                                project_id=str(sp.get("project_id") or ""),
+                                module_id=str(sp.get("module_id") or ""),
+                                entity_id=str(sp.get("entity_id") or ""),
+                            )
+
+            trust = self._trust_of(hit, record)
+            space_meta = {}
+            if hit.space is not None:
+                space_meta = {
+                    "profile_id": hit.space.profile_id,
+                    "project_id": hit.space.project_id,
+                }
+            elif record and record.space:
+                space_meta = {
+                    "profile_id": record.space.profile_id,
+                    "project_id": record.space.project_id,
+                }
+            elif isinstance(hit.payload.get("space"), dict):
+                space_meta = hit.payload["space"]
+
             cross = False
             src_profile = str(space_meta.get("profile_id") or "")
             src_project = str(space_meta.get("project_id") or "")
@@ -151,8 +229,8 @@ class SafeRecall:
                 if inbound == "deny" or not allow_reference:
                     withheld.append(
                         RecallItem(
-                            id=mem_id,
-                            module=str(row.get("module") or ""),
+                            id=hit.id,
+                            module=hit.module,
                             disposition="withhold",
                             trust=trust,
                             reason="跨空间隔离：目标 Profile 拒绝入站或不可作本空间事实",
@@ -163,25 +241,32 @@ class SafeRecall:
                 disposition = "reference"
                 reason = "跨空间相似记忆，仅作参考（Reference）"
             else:
-                disposition = recall_disposition(trust)
+                disposition = tm.disposition(trust)
                 reason = ""
 
-            # 6–7. 状态 / 证据 / 过期
-            if row.get("stale"):
+            if hit.stale:
                 if disposition == "allow":
                     disposition = "reference"
                     reason = reason or "记忆已过期/需核实，不作为当前结论"
             if trust.status == "rejected":
                 disposition = "withhold"
                 reason = "已拒绝的推论/记忆"
-            if row.get("conflict"):
+            if hit.conflict:
                 disposition = "withhold"
                 reason = "存在未解决冲突"
-                refusals.append(f"{mem_id}: 未解决冲突")
+                refusals.append(f"{hit.id}: 未解决冲突")
 
-            module_name = str(row.get("module") or (getattr(entry, "module", None) if entry else None) or "")
+            module_name = hit.module or ""
+            row = hit.payload or {
+                "id": hit.id,
+                "module": module_name,
+                "entity": hit.entity,
+                "kind": hit.kind,
+                "summary": hit.summary,
+                "status": hit.status,
+            }
             item = RecallItem(
-                id=mem_id,
+                id=hit.id,
                 module=module_name,
                 disposition=disposition,
                 trust=trust,
@@ -191,7 +276,6 @@ class SafeRecall:
             )
             if module_name and not item.payload.get("module"):
                 item.payload["module"] = module_name
-            # reference 去掉正文，避免模型当事实用
             if disposition == "reference":
                 item.payload = {
                     k: v for k, v in row.items()
@@ -212,7 +296,6 @@ class SafeRecall:
         return RecallResult(ok=True, items=items_out, withheld=withheld, refusals=refusals)
 
     def assert_module_scope(self, ctx: SpaceContext, module: str) -> None:
-        """改代码前闸门可调用：确保当前空间下的模块检索。"""
         if not module:
             raise IsolationError("缺少模块，无法安全召回", "scope_missing")
         ctx.space.module_id = module

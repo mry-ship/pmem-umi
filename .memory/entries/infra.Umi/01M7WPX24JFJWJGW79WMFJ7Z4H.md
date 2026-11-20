@@ -11,6 +11,8 @@ revision: none
 author: 1002378395@qq.com
 note_date: '2026-11-20'
 summary: Safe Recall 检索结果补全 module 字段
+verified: '2026-11-21'
+verified_at: '2026-11-21T00:52:50.817+08:00'
 ---
 用户要求：safe_recall 返回的 items 必须带上 module；
 若底层检索行缺 module，则从 Entry 回填，避免 disposition/allow 项模块名为空。

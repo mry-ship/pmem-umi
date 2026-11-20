@@ -17,16 +17,41 @@
 
 > AI 可以提出修改记忆的建议，但不能直接获得修改权威知识的无限权限。
 
+## 三边界（必须划清）
+
+| 层级 | 归属 | 说明 |
+|---|---|---|
+| 存储、检索、事件、版本、权限 | **UMI Core** | 通用基础设施；只认 `umi.core` 端口与类型 |
+| 项目模块、代码映射、Spec、研发拦截 | **pmem** | 项目研发专属能力；经 Adapter 接入，不渗入 UMI 业务 |
+| 记忆策略、信任规则、治理策略 | **Profile / Policy** | 不同领域不同规则；引擎只执行 |
+
+原则：**pmem 是 UMI 的技术起点，不是永远的技术依赖。**  
+UMI 通用逻辑不得越来越依赖 pmem 内部数据结构（如 `Entry` / Index schema）。
+
+### 稳定端口（换底层只换 Adapter）
+
+| 端口 | 职责 | 当前实现 |
+|---|---|---|
+| `MemoryStore` | 按 id 读写记忆单元 | `adapters.pmem.PmemMemoryStore` |
+| `MemoryRetriever` | 检索命中 | `PmemMemoryRetriever` |
+| `KnowledgeRepository` | 版本提交 / 回滚 | `PmemKnowledgeRepository` |
+| `TrustManager` | 信任解析与召回处置 | `DefaultTrustManager` / `PmemTrustManager` |
+| `SpaceManager` | 空间隔离 | `umi.space.SpaceManager` |
+| `GovernanceEngine` | 治理审计 | `PmemGovernanceEngine` |
+
+装配入口：`build_pmem_runtime(service)` → `UmiRuntime`。  
+路线：① 复用 pmem → ② 发展 UMI → ③ 解耦（双方互不强制依赖）。
+
 ## 六层架构
 
 | 层 | 职责 | 代码 |
 |---|---|---|
-| L6 Quality & Governance | Doctor / Health / 审计 / Recovery | `pmem/umi/governance.py` |
-| L5 Knowledge Evolution | 修正、合并、版本、回滚 | `pmem/umi/versions.py` + EventLog |
-| L4 Retrieval & Context | Safe Recall | `pmem/umi/safe_recall.py` |
-| L3 Knowledge Spaces | Personal / Project / Team / Domain | `pmem/umi/space.py` + `profiles/` |
-| L2 Immutable Record | 事件日志、版本、hash | `pmem/umi/events.py` |
-| L1 Universal Memory Core | 协议与接口 | `pmem/umi/models.py` |
+| L6 Quality & Governance | Doctor / Health / 审计 / Recovery | `umi/governance.py` + `GovernanceEngine` |
+| L5 Knowledge Evolution | 修正、合并、版本、回滚 | `KnowledgeRepository` / `versions.py` |
+| L4 Retrieval & Context | Safe Recall | `safe_recall.py` ← `MemoryRetriever` |
+| L3 Knowledge Spaces | Personal / Project / Team / Domain | `space.py` + `profiles/` |
+| L2 Immutable Record | 事件日志、版本、hash | `events.py` |
+| L1 Universal Memory Core | 端口与稳定类型 | `umi/core/ports.py` + `types.py` |
 
 Memory Core 只提供通用基础设施，不解释领域语义；Knowledge Space / Profile 各自拥有规则、生命周期与检索边界。
 
@@ -94,6 +119,8 @@ pmem umi cross --mode reference --source-id ... --source-profile domain --source
 
 ## v0.1 范围
 
-已具备：隔离骨架、信任/候选写入、事件版本与回滚、Safe Recall、治理审计、评测套件、**Personal/Team/Domain/行业扩展 Profile**、跨空间引用策略、Agent 权限策略。
+已具备：隔离骨架、信任/候选写入、事件版本与回滚、Safe Recall、治理审计、评测套件、**Personal/Team/Domain/行业扩展 Profile**、跨空间引用策略、Agent 权限策略、**Core 六端口 + pmem Adapter + UmiRuntime**。
 
-后续：默认 MCP 入口强制 Safe Path、Report 四分册与标注版错误召回率、Adaptation 自动生成本地候选草稿。
+后续：默认 MCP 入口强制 Safe Path、Report 四分册与标注版错误召回率、Adaptation 自动生成本地候选草稿、非 pmem 存储 Adapter。
+
+仓库：[github.com/mry-ship/pmem-umi](https://github.com/mry-ship/pmem-umi) · 安装：`uv tool install "pmem[embed] @ git+https://github.com/mry-ship/pmem-umi"`

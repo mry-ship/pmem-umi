@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>pmem 使用手册：项目研发记忆</title>
+<title>PMEM·UMI 使用手册：Universal Memory Infrastructure</title>
 <style>
   :root {
     --bg: #f7f8fa;
@@ -106,10 +106,11 @@
 <body>
 <div class="layout">
 <nav>
-  <div class="brand">pmem 使用手册</div>
-  <div class="ver">v0.7.0 · 项目研发记忆</div>
+  <div class="brand">PMEM·UMI 手册</div>
+  <div class="ver">v0.1.0 · Universal Memory Infrastructure</div>
   <a href="#glance">一眼看懂</a>
-  <a href="#what">pmem 是什么</a>
+  <a href="#umi">UMI 通用层</a>
+  <a href="#what">项目研发记忆</a>
   <a href="#benefits">收益与适用场景</a>
   <a href="#concepts">核心概念</a>
   <a href="#onboard">在其他项目接入</a>
@@ -128,9 +129,10 @@
 </nav>
 
 <main>
-<h1>pmem：插拔式、托管式的 AI 项目记忆系统</h1>
-<p class="subtitle"><strong>插拔式：</strong>一条 <code>pmem init</code> 接入任何项目，不改业务代码；不想用了，删掉它生成的配置即可。<br>
-<strong>托管式：</strong>接入后绝大部分时候不需要你手动操作。查记忆、写记忆、忘查时拦截、改完没记时提醒、新增的代码目录登记成模块，全部由 AI 和 Hook 自动完成，你照常提需求、修 bug 就行。<br>记忆是仓库里的 Markdown 文件，跟代码一起提交、团队共享，不需要服务器，也不上传任何数据。支持 Cursor、Claude Code、Codex。</p>
+<h1>PMEM · Universal Memory Infrastructure</h1>
+<p class="subtitle"><strong>本手册对应仓库</strong>：<a href="https://github.com/mry-ship/pmem-umi">mry-ship/pmem-umi</a>（v0.1.0），不是旧仓 <code>mry-ship/pmem</code> 的后续小版本。<br>
+<strong>UMI</strong>：隔离、信任、版本、Safe Recall、可插拔 Profile；业务只依赖 Core 端口，换底层只换 Adapter。<br>
+<strong>项目研发记忆</strong>：一条 <code>pmem init</code> 接入；查 / 写 / 拦截 / 提醒由 AI 与 Hook 托管；记忆在仓库 Markdown 里团队共享。支持 Cursor、Claude Code、Codex。</p>
 
 <section id="glance" style="border:2px solid var(--accent)">
   <h2>一眼看懂</h2>
@@ -161,7 +163,7 @@
     <div class="card">
       <h4>三步接入（约 5 分钟）</h4>
       <pre><code><span class="c"># 1. 安装（每人一次）</span>
-uv tool install "pmem[embed] @ git+https://github.com/mry-ship/pmem"
+uv tool install "pmem[embed] @ git+https://github.com/mry-ship/pmem-umi"
 <span class="c"># 2. 项目根目录绑定（每个项目一次）</span>
 pmem init --type game
 <span class="c"># 3. Cursor 设置 → MCP 启用 pmem，
@@ -198,6 +200,30 @@ pmem doctor</code></pre>
 </section>
 
 <!-- ============ 是什么 ============ -->
+
+<section id="umi">
+  <h2>UMI 通用层</h2>
+  <p>Universal Memory Infrastructure 提供跨领域的记忆治理能力。项目研发记忆（模块 / Spec / Hook）通过 <strong>Adapter</strong> 复用现有实现；UMI 业务只依赖 Core 端口，不直接依赖 <code>Entry</code> 等内部结构。</p>
+  <table>
+    <tr><th>归属</th><th>内容</th></tr>
+    <tr><td>UMI Core</td><td>存储、检索、事件、版本、权限；端口：<code>MemoryStore</code> / <code>MemoryRetriever</code> / <code>KnowledgeRepository</code> / <code>TrustManager</code> / <code>SpaceManager</code> / <code>GovernanceEngine</code></td></tr>
+    <tr><td>pmem Adapter</td><td>项目模块、代码映射、Spec、研发拦截；当前实现：<code>umi.adapters.pmem</code></td></tr>
+    <tr><td>Profile / Policy</td><td>记忆策略、信任规则、治理检查集（personal / project / team / domain 及行业扩展）</td></tr>
+  </table>
+  <p>原则：<strong>pmem 是技术起点，不是永远的技术依赖。</strong> 路线：复用 pmem → 发展 UMI → 解耦。详解见 <a href="umi-architecture.md">umi-architecture.md</a>。</p>
+  <h3>常用命令</h3>
+  <pre><code>pmem umi bootstrap
+pmem umi profiles --full
+pmem umi record --profile personal --entity Prefs --kind preference --content "..."
+pmem umi search --module infra.Umi "隔离"
+pmem umi promote &lt;id&gt; --to validated --evidence user_confirm
+pmem umi cross --mode reference --source-id ... --source-profile domain --source-project lib
+pmem umi governance
+pmem umi eval</code></pre>
+  <h3>信任与 Safe Recall</h3>
+  <p>默认写入 <code>candidate</code>；晋升 <code>validated</code> / <code>authoritative</code> 需要已核实证据（权威另需 <code>--force</code>）。检索处置：<code>allow</code>（可作事实）/ <code>reference</code>（仅参考）/ <code>withhold</code>（拒答）。个人空间记忆默认不可外泄到其他 Profile。</p>
+</section>
+
 <section id="what">
   <h2>pmem 是什么</h2>
   <p>pmem 把研发过程中得出的结论（根因、排除过的方向、方案决定、风险）按<strong>业务模块</strong>存成 Markdown 文件，放在仓库的 <code>.memory/</code> 目录里，跟代码一起提交、评审，整个团队共享。</p>
@@ -440,11 +466,11 @@ verify: 断线重连后领取，服务端日志只有一次发奖
       <strong>安装 pmem</strong><span class="tag once">每人一次</span>
       <p>本机已经装好（以可编辑模式从本仓库安装，改本仓库代码立即生效），可以跳过。其他同事按下面任一方式安装：</p>
       <pre><code><span class="c"># 方式 A：从 GitHub 安装（推荐团队使用）</span>
-uv tool install "pmem[embed] @ git+https://github.com/mry-ship/pmem"
+uv tool install "pmem[embed] @ git+https://github.com/mry-ship/pmem-umi"
 
 <span class="c"># 以后升级到最新版（不生效时用第二行强制重装）</span>
 uv tool upgrade pmem
-uv tool install --reinstall "pmem[embed] @ git+https://github.com/mry-ship/pmem"
+uv tool install --reinstall "pmem[embed] @ git+https://github.com/mry-ship/pmem-umi"
 
 <span class="c"># 方式 B：拿到本仓库源码目录后，在该目录里执行</span>
 uv tool install --editable ".[embed]"
@@ -600,6 +626,9 @@ git commit -m "接入 pmem"</code></pre>
     <tr><td><code>confirm_memory</code></td><td>核对后确认仍然成立，刷新核对日期</td><td><code>ids</code></td></tr>
     <tr><td><code>memory_graph</code></td><td>模块全貌：每个议题的最新两条结论（过期的带 <code>stale</code>）和相关模块；带 <code>entity</code> 时看该议题的时间线（谁哪天替代了谁）</td><td><code>module</code>；可选 <code>entity</code></td></tr>
     <tr><td><code>list_modules</code></td><td>列出模块、记忆数量和常用议题</td><td>可选 <code>category</code></td></tr>
+    <tr><td><code>safe_search_memory</code></td><td>Safe Recall：硬隔离 + 信任过滤；disposition=reference 仅作参考</td><td>同 search；跨项目防污染优先用此工具</td></tr>
+    <tr><td><code>controlled_record_memory</code></td><td>受控写入（默认 candidate）；支持 profile_id / layer / agent_id，module 可空</td><td>entity、kind、content；可选 trust_status、evidence、op_id、force_authoritative</td></tr>
+    <tr><td><code>promote_memory</code> / <code>rollback_memory</code> / <code>memory_governance</code></td><td>晋升、回滚、治理审计</td><td>memory_id；晋升需 evidence_type；权威需 force_authoritative</td></tr>
   </table>
   <p>检索结果里几个关键字段：<code>items</code>（教训，全文）、<code>features</code>（功能记录和规划，只有标题；改动会改变这些行为时先用 <code>ids</code> 取全文核对）、<code>applies</code>（自由文字适用条件）、<code>when</code>（结构化适用条件）、<code>stale</code>（关联代码已变）、<code>check</code>（具体哪些文件变了）、<code>fallback: module</code>（议题内没命中，退回整个模块）、<code>related</code>（相关模块）、<code>status</code>（只在不是正式记忆时出现，如 <code>seed</code>）、<code>seen</code>（本对话已返回过全文，这次只给标题；上下文里找不到原文时带 <code>full=true</code> 重查）。同一对话的去重记录在上下文压缩后清空；终端里的 <code>pmem search</code> 由 Hook 在执行前交接对话 id，同样参与去重。MCP 不提供改状态的工具，转正、退回、归档只能由人在命令行操作。</p>
 </section>
@@ -637,6 +666,7 @@ git commit -m "接入 pmem"</code></pre>
     <tr><td><code>pmem report</code></td><td>本机收益报告；开了 <code>harness.mode</code> 时另有漏改提示采纳率、验证回合比例、同文件 3 天返工率</td></tr>
     <tr><td><code>pmem bench</code></td><td>有 / 无记忆对照实验</td></tr>
     <tr><td><code>pmem serve</code> / <code>pmem hook</code></td><td>由工具自动调用，不需要手动运行</td></tr>
+    <tr><td><code>pmem umi …</code></td><td>UMI：<code>bootstrap</code> / <code>profiles</code> / <code>record</code> / <code>search</code> / <code>promote</code> / <code>rollback</code> / <code>cross</code> / <code>governance</code> / <code>recovery</code> / <code>eval</code></td></tr>
   </table>
   <pre><code>pmem search --path Assets/Game/Jigsaw/JigsawReward.cs
 pmem search --module Puzzle "重复发放"                       <span class="c"># 别名、同义词自动扩展</span>
@@ -859,7 +889,7 @@ pmem bench                <span class="c"># 结果写入 bench-results/summary.m
 <section id="import">
   <h2>迁移旧记忆</h2>
   <p>已有 LanceDB 版记忆库（如 tilematch-dev-memory）可以只读导入，源库不会被修改，重复执行会跳过已导入的条目：</p>
-  <pre><code>uv tool install "pmem[embed,import] @ git+https://github.com/mry-ship/pmem"   <span class="c"># 或在源码目录 uv tool install --editable ".[embed,import]"</span>
+  <pre><code>uv tool install "pmem[embed,import] @ git+https://github.com/mry-ship/pmem-umi"   <span class="c"># 或在源码目录 uv tool install --editable ".[embed,import]"</span>
 pmem import --lancedb &lt;源库目录&gt; --catalog &lt;源 modules.yaml&gt; --author &lt;团队名&gt; --dry-run   <span class="c"># 先预览</span>
 pmem import --lancedb &lt;源库目录&gt; --catalog &lt;源 modules.yaml&gt; --author &lt;团队名&gt; --guess-kind
 pmem anchors --apply      <span class="c"># 给导入的记忆补关联代码</span>

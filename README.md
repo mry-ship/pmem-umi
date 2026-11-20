@@ -1,39 +1,41 @@
 <div align="center">
 
-# 项目 → 记忆 → 资产
+# PMEM · Universal Memory Infrastructure
 
-**pmem** · 插拔式、托管式的 AI 项目研发记忆
+**UMI** · 长期可运行的记忆 / 知识 / 上下文治理基础设施
 
-工作、踩坑、灵感和模块设计都留在项目里。<br>
-过程可查。好的记忆和模块规格可以拿走，变成别人也能用的资产。
-
-让 AI 编程助手记住项目里踩过的坑、排除过的方向和做过的决定，<br>
-并在下次改代码前自动想起来。
+隔离 · 信任 · 版本 · Safe Recall · 可插拔 Profile  
+项目研发记忆（原 pmem 工作流）作为 **Adapter 复用层** 一并提供，不是本产品的永久技术依赖。
 
 ![Version](https://img.shields.io/badge/version-0.1.0-blue)
 ![License](https://img.shields.io/badge/license-GPL--3.0-green)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
-![Cursor](https://img.shields.io/badge/Cursor-支持-000000)
-![Claude Code](https://img.shields.io/badge/Claude%20Code-支持-D97757)
-![Codex](https://img.shields.io/badge/Codex-支持-10A37F)
-![Git / SVN](https://img.shields.io/badge/Git%20%2F%20SVN-支持-F05032)
+![Repo](https://img.shields.io/badge/repo-mry--ship%2Fpmem--umi-black)
 
-[📖 使用手册](https://mry-ship.github.io/pmem/pmem-guide.html) · [快速接入](#快速接入) · [UMI 架构](docs/umi-architecture.md) · [架构说明](docs/architecture.md) · [路线](#路线)
+[📖 使用手册](docs/pmem-guide.html) · [UMI 架构](docs/umi-architecture.md) · [快速接入](#快速接入) · [架构说明](docs/architecture.md) · [Release](https://github.com/mry-ship/pmem-umi/releases)
 
 </div>
 
 ---
 
-## v0.1.0 · Universal Memory Infrastructure
+## v0.1.0 · 产品定位
 
-本仓库是**全新产品**的首个版本（v0.1.0），不是上游 pmem 的后续小版本。目标不是「记住很多」，而是长期运行、持续进化、且不易污染/遗失/篡改/误用知识的记忆基础设施：
+本仓库是**全新产品线**的首个版本（[mry-ship/pmem-umi](https://github.com/mry-ship/pmem-umi)），**不是** [mry-ship/pmem](https://github.com/mry-ship/pmem) 的后续小版本。
 
-- **隔离优先**：Space / Profile 硬边界，跨项目只允许 Reference
-- **受控写入**：默认 Candidate；权威知识需证据与授权
-- **版本与回滚**：Append-only Event Log + Versioned Knowledge
-- **Safe Recall**：宁缺毋滥，支持拒答与 reference_only
-- **治理**：`pmem umi governance` / `pmem umi eval` / Recovery Mode
-- **多 Profile**：personal / project / team / domain + game/art/research/business/agent_workflow
+目标不是「记住很多」，而是长期运行、持续进化、且不易污染 / 遗失 / 篡改 / 误用知识：
+
+| 能力 | 说明 |
+|---|---|
+| 隔离优先 | Space / Profile 硬边界；跨空间默认 Reference |
+| 受控写入 | 默认 Candidate；权威需证据与授权 |
+| 版本与回滚 | Append-only Event Log + Versioned Knowledge |
+| Safe Recall | 宁缺毋滥；`allow` / `reference` / `withhold` |
+| 治理与评测 | `pmem umi governance` / `eval` / Recovery Mode |
+| 多 Profile | personal / project / team / domain + 行业扩展 |
+| Core 端口 | `MemoryStore` / `Retriever` / `KnowledgeRepository` / `TrustManager` / `SpaceManager` / `GovernanceEngine`；换底层只换 Adapter |
+
+**三边界**：存储检索事件版本权限 → UMI Core；模块映射 Spec 研发拦截 → pmem Adapter；信任与治理策略 → Profile。  
+原则：**pmem 是技术起点，不是永远的技术依赖。**
 
 详见 [docs/umi-architecture.md](docs/umi-architecture.md)。  
 常用：`pmem umi bootstrap|profiles|record|search|cross|promote|rollback|governance|eval`。
@@ -85,8 +87,8 @@ pmem 把这些结论按**业务模块**沉淀成仓库里的 Markdown 文件。A
 约 5 分钟，每个项目一次。需要 [uv](https://docs.astral.sh/uv/)（Python 包管理工具）和 Python 3.10 以上。
 
 ```bash
-# 1. 安装（每人一次）
-uv tool install "pmem[embed] @ git+https://github.com/mry-ship/pmem"
+# 1. 安装（每人一次）——本产品仓库为 pmem-umi，不是旧仓 mry-ship/pmem
+uv tool install "pmem[embed] @ git+https://github.com/mry-ship/pmem-umi"
 
 # 2. 在项目根目录接入
 pmem init --type game            # 项目类型：game / app / backend / generic
@@ -355,16 +357,18 @@ pmem format --apply                    # 把旧记忆里一整行的长正文断
 
 | 文档 | 内容 |
 |---|---|
-| [使用手册](https://mry-ship.github.io/pmem/pmem-guide.html) | 图文版：接入、日常使用、闸门、配置、命令、常见问题 |
-| [Wiki](https://github.com/mry-ship/pmem/wiki) | 快速上手、日常使用、更新记录 |
+| [使用手册](docs/pmem-guide.html) | 图文版：接入、UMI、闸门、MCP、命令、常见问题（亦可开 GitHub Pages） |
+| [UMI 架构](docs/umi-architecture.md) | 三边界、六层、端口、Profile、命令 |
 | [架构说明](docs/architecture.md) | 各包职责、分层约束、命令分发 |
-| [设计文档](docs/superpowers/specs/2026-10-14-pmem-design.md) | 完整设计与版本规划（第 14 节） |
+| [设计文档](docs/superpowers/specs/2026-10-14-pmem-design.md) | 早期设计参考（能力已并入本产品 0.1.0） |
+| [Releases](https://github.com/mry-ship/pmem-umi/releases) | 版本包与变更说明 |
 
 ## 路线
 
 | 版本 | 内容 | 状态 |
 |---|---|---|
-| [v0.3.1](https://github.com/mry-ship/pmem/issues/12) | 功能记录与分层检索 | 已完成 |
+| **v0.1.0** | UMI：隔离 / 信任 / 版本 / Safe Recall / Profile / Core 端口 + pmem Adapter | **当前** |
+| [v0.3.1](https://github.com/mry-ship/pmem/issues/12) | 功能记录与分层检索（能力并入） | 已完成 |
 | [v0.3.2](https://github.com/mry-ship/pmem/issues/13) | 记忆图与严格清理 | 已完成 |
 | [v0.4](https://github.com/mry-ship/pmem/issues/14) | 治理闭环与团队化 | 已关闭：转正提示和召回审计已实现，团队汇总与中心服务长期搁置 |
 | v0.5（[设计稿](docs/superpowers/specs/2026-10-21-pmem-module-hierarchy-design.md)） | 父子模块与回复格式 | 已完成 |

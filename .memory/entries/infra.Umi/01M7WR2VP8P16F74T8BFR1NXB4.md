@@ -13,6 +13,8 @@ author: 1002378395@qq.com
 note_date: '2026-11-20'
 summary: 本仓库是全新 UMI 产品 V0.1.0，不是 pmem 后续演进版
 applies: 讨论本仓库定位与版本时
+verified: '2026-11-21'
+verified_at: '2026-11-21T00:52:50.817+08:00'
 ---
 更正：此前「以现有 pmem 演变、不推倒重做、版本 0.8」的表述不成立。
 用户要求：本项目是全新的 Universal Memory Infrastructure，版本 V0.1.0；

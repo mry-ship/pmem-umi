@@ -6,7 +6,7 @@ from pmem.service.base import ServiceBase, fail, returns_errors
 from pmem.service.record import RecordOps
 from pmem.service.search import SearchOps
 from pmem.umi.events import EventLog, event_log_path
-from pmem.umi.governance import is_recovery_mode, run_governance, set_recovery_mode
+from pmem.umi.governance import is_recovery_mode, set_recovery_mode
 from pmem.umi.models import (
     Evidence,
     KnowledgeClaim,
@@ -29,6 +29,7 @@ from pmem.umi.write_gate import WriteGate, WriteRequest
 class UmiOps(ServiceBase):
     _event_log: EventLog | None = None
     _spaces: SpaceManager | None = None
+    _umi_runtime: object | None = None
 
     def umi_enabled(self) -> bool:
         umi = self.config.get("umi") or {}
@@ -52,10 +53,19 @@ class UmiOps(ServiceBase):
             self._event_log = EventLog(event_log_path(self.root))
         return self._event_log
 
+    def umi_runtime(self):
+        """UMI Core 运行时：业务应经此拿 Store/Retriever/…，避免直接绑 pmem 内部类型。"""
+        if self._umi_runtime is None:
+            from pmem.umi.adapters.pmem import build_pmem_runtime
+
+            self._umi_runtime = build_pmem_runtime(self)
+        return self._umi_runtime
+
     def close(self) -> None:
         if self._event_log is not None:
             self._event_log.close()
             self._event_log = None
+        self._umi_runtime = None
         super().close()
 
     def _ctx(self, module: str = "", entity: str = "", source_conversation: str | None = None):
@@ -89,10 +99,11 @@ class UmiOps(ServiceBase):
             return SearchOps.search(self, **kwargs)
         module = kwargs.get("module") or ""
         ctx = self._ctx(module=module or "")
+        rt = self.umi_runtime()
         recall = SafeRecall(
             spaces=self.spaces(),
-            search_fn=lambda **kw: SearchOps.search(self, **kw),
-            entry_lookup=lambda i: self.index.find(i),
+            retriever=rt.retriever,
+            trust_manager=rt.trust,
         )
         result = recall.recall(ctx, **kwargs)
         data = result.as_dict()
@@ -362,17 +373,18 @@ class UmiOps(ServiceBase):
         op_id: str | None = None,
         force_authoritative: bool = False,
     ) -> dict:
-        entry = self.index.find(memory_id)
-        if entry is None:
+        rt = self.umi_runtime()
+        record = rt.store.get(memory_id)
+        if record is None:
             return fail(f"记忆不存在：{memory_id}", "not_found")
-        ctx = self._ctx(module=entry.module, entity=entry.entity)
+        ctx = self._ctx(module=record.module, entity=record.entity)
         ctx.assert_writable()
         if to_status not in ("validated", "authoritative"):
             return fail("只能晋升到 validated / authoritative", "trust_invalid")
         if to_status == "authoritative" and not force_authoritative:
             return fail("晋升权威知识需要 force_authoritative=true 与明确证据", "authority")
 
-        trust = parse_trust(entry.extra or {}, legacy_status=entry.status, verified=bool(entry.verified))
+        trust = rt.trust.parse(record)
         try:
             for item in evidence or []:
                 if isinstance(item, dict) and item.get("evidence_type"):
@@ -390,76 +402,71 @@ class UmiOps(ServiceBase):
             return fail("晋升需要至少一条已核实证据（evidence_type + verified）", "evidence")
         trust.status = to_status
         trust.verification = "verified"
-        entry.status = legacy_status_for_trust(to_status)
         try:
             op = valid_op_id(op_id) or new_op_id("promote")
         except ValueError as exc:
             return fail(str(exc), "op_id")
-        versions = VersionStore(self.event_log())
-        snap = versions.commit(
-            entry.id,
-            entry.content,
+        snap = rt.knowledge.commit(
+            record.id,
+            record.content,
             trust=trust,
-            meta={"summary": entry.title, "module": entry.module, **(entry.extra or {})},
+            meta={"summary": record.summary, "module": record.module, **(record.extra or {})},
             actor=self.user,
             space_key=ctx.space.isolation_key(),
             op_id=op,
             event_type="promoted",
         )
-        entry.extra = entry.extra or {}
-        entry.extra["trust"] = to_plain(trust)
-        entry.extra["version"] = snap.version
-        entry.extra["content_sha256"] = content_hash(entry.content)
-        path = self.storage.find_path(entry.id)
-        if path:
-            self.storage.rewrite(path, entry)
-            self.index.refresh(force=True)
-        return {"ok": True, "id": entry.id, "trust": to_plain(trust), "version": snap.version}
+        record.status = legacy_status_for_trust(to_status)
+        record.trust = trust
+        record.version = snap.version
+        record.content_sha256 = content_hash(record.content)
+        record.extra = {**(record.extra or {}), "trust": to_plain(trust), "version": snap.version,
+                        "content_sha256": record.content_sha256}
+        rt.store.save(record)
+        return {"ok": True, "id": record.id, "trust": to_plain(trust), "version": snap.version}
 
     @returns_errors
     def rollback_memory(self, memory_id: str, to_version: int, *, op_id: str | None = None) -> dict:
-        entry = self.index.find(memory_id)
-        if entry is None:
+        rt = self.umi_runtime()
+        record = rt.store.get(memory_id)
+        if record is None:
             return fail(f"记忆不存在：{memory_id}", "not_found")
-        ctx = self._ctx(module=entry.module, entity=entry.entity)
+        ctx = self._ctx(module=record.module, entity=record.entity)
         ctx.assert_writable()
         try:
             op = valid_op_id(op_id) or new_op_id("rollback")
         except ValueError as exc:
             return fail(str(exc), "op_id")
-        snap = VersionStore(self.event_log()).rollback(
+        snap = rt.knowledge.rollback(
             memory_id, to_version, actor=self.user, space_key=ctx.space.isolation_key(), op_id=op
         )
-        entry.content = snap.content
-        entry.extra = {**(entry.extra or {}), **snap.meta, "version": snap.version}
-        # 与版本快照的 trust 对齐 entry.status，避免 trust=candidate 却 status=active
+        record.content = snap.content
+        record.extra = {**(record.extra or {}), **snap.meta, "version": snap.version}
         trust_meta = snap.meta.get("trust") if isinstance(snap.meta.get("trust"), dict) else None
         trust_status = (trust_meta or {}).get("status") or snap.trust_status
         if trust_status:
-            entry.status = legacy_status_for_trust(str(trust_status))
+            record.status = legacy_status_for_trust(str(trust_status))
             if trust_meta is None:
-                entry.extra["trust"] = {
+                record.extra["trust"] = {
                     "status": trust_status,
                     "verification": "verified",
                 }
-        path = self.storage.find_path(entry.id)
-        if path:
-            self.storage.rewrite(path, entry)
-            self.index.refresh(force=True)
+            record.trust = parse_trust(record.extra, legacy_status=record.status)
+        record.version = snap.version
+        rt.store.save(record)
         return {"ok": True, "id": memory_id, "version": snap.version, "content": snap.content,
-                "status": entry.status}
+                "status": record.status}
 
     def governance_report(self) -> dict:
-        self.index.refresh(force=True)
+        rt = self.umi_runtime()
         profile = self.active_profile()
-        report = run_governance(
-            self.root,
-            list(self.index.entries()),
+        data = rt.governance.report(
+            rt.store.list(),
             spaces=self.spaces(),
             recovery_mode=is_recovery_mode(self.root),
             doctor_checks=profile.doctor_checks,
         )
-        return {"ok": True, "profile_id": profile.id, **report.as_dict()}
+        return {"ok": True, "profile_id": profile.id, **data}
 
     def set_recovery(self, enabled: bool) -> dict:
         path = set_recovery_mode(self.root, enabled, actor=self.user)
