@@ -12,7 +12,7 @@
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![Repo](https://img.shields.io/badge/repo-mry--ship%2Fpmem--umi-black)
 
-[📖 使用手册](docs/pmem-guide.html) · [UMI 架构](docs/umi-architecture.md) · [快速接入](#快速接入) · [架构说明](docs/architecture.md) · [Release](https://github.com/mry-ship/pmem-umi/releases)
+[📖 使用手册](https://mry-ship.github.io/pmem-umi/pmem-guide.html) · [UMI 架构](docs/umi-architecture.md) · [快速接入](#快速接入) · [架构说明](docs/architecture.md) · [Release](https://github.com/mry-ship/pmem-umi/releases)
 
 </div>
 
@@ -357,7 +357,7 @@ pmem format --apply                    # 把旧记忆里一整行的长正文断
 
 | 文档 | 内容 |
 |---|---|
-| [使用手册](docs/pmem-guide.html) | 图文版：接入、UMI、闸门、MCP、命令、常见问题（亦可开 GitHub Pages） |
+| [使用手册](https://mry-ship.github.io/pmem-umi/pmem-guide.html) | 图文版：接入、UMI、闸门、MCP、命令、常见问题（[源文件](docs/pmem-guide.html)） |
 | [UMI 架构](docs/umi-architecture.md) | 三边界、六层、端口、Profile、命令 |
 | [架构说明](docs/architecture.md) | 各包职责、分层约束、命令分发 |
 | [设计文档](docs/superpowers/specs/2026-10-14-pmem-design.md) | 早期设计参考（能力已并入本产品 0.1.0） |
